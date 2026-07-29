@@ -139,6 +139,12 @@ namespace nvenc {
     NV_ENC_BUFFER_FORMAT buffer_format,
     const SS_HDR_METADATA *initial_hdr_metadata
   ) {
+    // AV1 uses NV_ENC_RC_PARAMS::cbQPIndexOffset and crQPIndexOffset for 'deltaQ_u_ac' and
+    // 'deltaQ_v_ac', which have different semantics and a different range than the H.264 and
+    // HEVC chroma QP offsets, so they're left at the preset default there.
+    const bool chroma_qp_offsets_requested =
+      client_config.videoFormat <= 1 && (config.cb_qp_offset != 0 || config.cr_qp_offset != 0);
+
     const auto encode_guid = encode_guid_from_video_format(client_config.videoFormat);
     if (!encode_guid) {
       BOOST_LOG(error) << "NvEnc: unknown video format " << client_config.videoFormat;
@@ -472,6 +478,15 @@ namespace nvenc {
     enc_config.rcParams.enableAQ = config.adaptive_quantization;
     enc_config.rcParams.enableTemporalAQ = config.temporal_aq && get_encoder_cap(NV_ENC_CAPS_SUPPORT_TEMPORAL_AQ);
     enc_config.rcParams.averageBitRate = client_config.bitrate * 1000;
+
+    if (chroma_qp_offsets_requested) {
+      // Written into the PPS as 'chroma_qp_index_offset'/'second_chroma_qp_index_offset' for
+      // H.264 and 'pps_cb_qp_offset'/'pps_cr_qp_offset' for HEVC. Both bitstream syntax
+      // elements are limited to -12..12 by the respective specifications. Drivers predating
+      // Video Codec SDK 12.0 don't know these fields and will silently ignore them.
+      enc_config.rcParams.cbQPIndexOffset = std::clamp(config.cb_qp_offset, -12, 12);
+      enc_config.rcParams.crQPIndexOffset = std::clamp(config.cr_qp_offset, -12, 12);
+    }
 
     if (get_encoder_cap(NV_ENC_CAPS_SUPPORT_CUSTOM_VBV_BUF_SIZE)) {
       enc_config.rcParams.vbvBufferSize = client_config.bitrate * 1000 / client_config.framerate;
@@ -841,6 +856,9 @@ namespace nvenc {
       }
       if (enc_config.rcParams.enableMinQP) {
         extra += std::format(" qpmin={}", enc_config.rcParams.minQP.qpInterP);
+      }
+      if (chroma_qp_offsets_requested) {
+        extra += std::format(" chroma-qp={}/{}", (int) enc_config.rcParams.cbQPIndexOffset, (int) enc_config.rcParams.crQPIndexOffset);
       }
       if (config.insert_filler_data) {
         extra += " filler-data";

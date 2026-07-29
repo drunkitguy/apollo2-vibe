@@ -836,6 +836,9 @@ namespace config {
 
     28,  // qp
 
+    0,  // cb_qp_offset
+    0,  // cr_qp_offset
+
     0,  // hevc_mode
     0,  // av1_mode
 
@@ -1725,6 +1728,14 @@ namespace config {
 
     bool_f(vars, "limit_framerate", video.limit_framerate);
     int_f(vars, "qp", video.qp);
+    int_between_f(vars, "cb_qp_offset", video.cb_qp_offset, {-12, 12});
+    int_between_f(vars, "cr_qp_offset", video.cr_qp_offset, {-12, 12});
+
+    // The standalone NVENC encoder writes both offsets into the PPS directly. Of the
+    // ffmpeg encoders only libx265 can reach them, through 'x265-params'.
+    video.nv.cb_qp_offset = video.cb_qp_offset;
+    video.nv.cr_qp_offset = video.cr_qp_offset;
+
     int_between_f(vars, "hevc_mode", video.hevc_mode, {0, 3});
     int_between_f(vars, "av1_mode", video.av1_mode, {0, 3});
     int_f(vars, "min_threads", video.min_threads);
