@@ -32,6 +32,7 @@ extern "C" {
 
 // local includes
 #include "config.h"
+#include "frame_trace.h"
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
@@ -1415,8 +1416,22 @@ namespace rtsp_stream {
 
     std::stringstream ss;
 
-    // Tell the client about our supported features
-    ss << "a=x-ss-general.featureFlags:" << (uint32_t) platf::get_capabilities() << std::endl;
+    // Tell the client about our supported features. Most of these are platform input
+    // capabilities, but the latency trace bit is a host-level stream capability and so is
+    // added here rather than inside platf::get_capabilities().
+    uint32_t feature_flags = platf::get_capabilities();
+    if (config::video.frame_trace) {
+      feature_flags |= frame_trace::HOST_FF_LATENCY_TRACE;
+    }
+    ss << "a=x-ss-general.featureFlags:" << feature_flags << std::endl;
+
+    if (config::video.frame_trace) {
+      // The capability bit alone can't say *which* revision of the extension we speak, and
+      // two revisions of the same 48 bytes already exist. Advertise the highest we can emit
+      // so a client can log the mismatch and so a future revision doesn't need both repos
+      // to land on the same day.
+      ss << "a=x-ss-general.traceExtVersion:" << (int) frame_trace::FRAME_TIMESTAMP_EXT_VERSION_MAX << std::endl;
+    }
 
     // Always request new control stream encryption if the client supports it
     uint32_t encryption_flags_supported = SS_ENC_CONTROL_V2 | SS_ENC_AUDIO;
@@ -1615,6 +1630,8 @@ namespace rtsp_stream {
     args.try_emplace("x-ss-video[0].chromaSamplingType"sv, "0"sv);
     args.try_emplace("x-ss-video[0].intraRefresh"sv, "0"sv);
     args.try_emplace("x-nv-video[0].clientRefreshRateX100"sv, "0"sv);
+    // A client predating this attribute understands version 1 and nothing newer
+    args.try_emplace("x-ml-general.traceExtVersion"sv, "1"sv);
 
     stream::config_t config {};
     config.gen1_framegen_fix = false;
@@ -1676,6 +1693,14 @@ namespace rtsp_stream {
       config.monitor.chromaSamplingType = (int) util::from_view(args.at("x-ss-video[0].chromaSamplingType"sv));
       config.monitor.enableIntraRefresh = (int) util::from_view(args.at("x-ss-video[0].intraRefresh"sv));
       config.monitor.vrr_low_latency = session->client_vrr_requested;
+
+      // A client only gets the frame timestamp extension if it advertised support for it
+      // and we advertised ours in DESCRIBE. Both halves have to agree or the frame header
+      // keeps its stock layout, which is what an unpatched peer on either side produces.
+      config.frameTrace = config::video.frame_trace && (config.mlFeatureFlags & frame_trace::CLIENT_FF_LATENCY_TRACE) != 0;
+      config.frameTraceExtVersion = frame_trace::negotiate_ext_version(
+        util::from_view(args.at("x-ml-general.traceExtVersion"sv))
+      );
 
       if (config::video.limit_framerate) {
         config.monitor.encodingFramerate = session->fps;

@@ -188,7 +188,7 @@ add_subdirectory("${GTEST_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/googletest")
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
-find_package(Boost CONFIG REQUIRED COMPONENTS log log_setup)
+find_package(Boost CONFIG REQUIRED COMPONENTS log log_setup process)
 find_package(OpenSSL REQUIRED)
 
 # Header-only SDK boundaries are named targets rather than process-wide include
@@ -389,6 +389,21 @@ sunshine_register_component(NAME test_component_http_pairing_policy TEST_SOURCE 
 sunshine_register_component(NAME test_component_video_policy TEST_SOURCE unit/test_video.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/video_policy.cpp")
 sunshine_register_component(NAME test_component_encoder_probe_policy TEST_SOURCE unit/test_encoder_probe_policy.cpp)
+# The trace recorders stamp the build version into their CSV metadata block. PROJECT_VERSION
+# is added to SUNSHINE_DEFINITIONS by cmake/prep/build_version.cmake, which the standalone test
+# entry point does not run, so it is supplied here with a placeholder fallback. The value is
+# not asserted by any test; only its presence in the header is.
+if(NOT DEFINED PROJECT_VERSION_FULL)
+    set(PROJECT_VERSION_FULL "0.0.0")
+endif()
+
+sunshine_register_component(NAME test_component_frame_trace TEST_SOURCE unit/test_frame_trace.cpp
+    SUPPORT_SOURCES "${CMAKE_CURRENT_LIST_DIR}/support/frame_trace_runtime_stubs.cpp"
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/frame_trace.cpp"
+    DEFINITIONS
+        "SUNSHINE_TEST_BIN_DIR=\"${CMAKE_CURRENT_BINARY_DIR}\""
+        "PROJECT_VERSION=\"${PROJECT_VERSION_FULL}\""
+    LINK_LIBRARIES Boost::log Boost::process)
 sunshine_register_component(NAME test_component_resource_config_catalog TEST_SOURCE unit/test_config_catalog_contract.cpp
     INCLUDE_DIRECTORIES "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}")
 sunshine_register_component(NAME test_component_resource_locale_catalog TEST_SOURCE integration/test_locale_consistency.cpp

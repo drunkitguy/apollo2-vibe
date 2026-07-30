@@ -244,6 +244,10 @@ namespace config {
     bool wgc_pacing_smoothing;  ///< Smooth WGC delivered frame cadence under low-latency (Reflex) source caps by snapping the pacing-group re-anchor back onto the prior grid instead of the jittery arrival phase. Disable for byte-for-byte legacy pacing.
     std::string fallback_mode;
     bool ignore_encoder_probe_failure;
+
+    bool frame_trace;  ///< Record per-frame host latency timestamps, off by default.
+    int frame_trace_capacity;  ///< Number of frames held in the in-memory ring buffer.
+    std::string frame_trace_path;  ///< CSV written once at session end, timestamped per run.
   };
 
   struct audio_t {

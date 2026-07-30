@@ -5,6 +5,7 @@
 #pragma once
 
 // local includes
+#include "frame_trace.h"
 #include "input.h"
 #include "platform/common.h"
 #include "video_policy.h"
@@ -338,6 +339,15 @@ namespace video {
     std::optional<std::chrono::steady_clock::time_point> capture_timestamp;
     std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
     std::chrono::steady_clock::time_point packet_enqueue_timestamp = std::chrono::steady_clock::now();
+
+    /// Host latency instrumentation. Written by the encode thread, read by the video
+    /// broadcast thread; ownership travels with the packet so no locking is involved.
+    /// All zero unless a frame trace is running.
+    ///
+    /// Distinct from the three timestamps above, which Vibepollo uses for its own pacing and
+    /// overlay. These are the per-stage stamps that go on the wire in the frame header
+    /// extension and into the trace CSV, and they are only populated while a trace is running.
+    frame_trace::host_stamps_t trace_stamps;
   };
 
   struct packet_raw_avcodec: packet_raw_t {
@@ -457,6 +467,12 @@ namespace video {
     std::optional<platf::adapter_id_t> *actual_adapter = nullptr,
     const std::string &probe_display_name = std::string {}
   );
+
+  /**
+   * @brief Name of the encoder selected by the last probe, e.g. "nvenc".
+   * @return Empty until `probe_encoders()` has picked one.
+   */
+  std::string active_encoder_name();
 
   /**
    * @brief Check if we can allow probing for the encoders.

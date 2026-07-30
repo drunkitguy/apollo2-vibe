@@ -673,6 +673,24 @@ export const settingsCategories: SettingsCategory[] = [
           number('video_max_batch_size_kb', { min: 1, step: 1 }),
         ],
       },
+      {
+        id: 'video_trace',
+        collapsed: true,
+        fields: [
+          boolean('frame_trace'),
+          number('frame_trace_capacity', {
+            min: 1,
+            max: 1000000,
+            step: 1,
+            visibleWhen: { key: 'frame_trace', equals: true },
+          }),
+          text('frame_trace_path', {
+            monospace: true,
+            stacked: true,
+            visibleWhen: { key: 'frame_trace', equals: true },
+          }),
+        ],
+      },
     ],
   },
   {
@@ -857,6 +875,9 @@ export const settingsDefaults: Record<string, unknown> = {
   qp: 28,
   fec_percentage: 20,
   video_max_batch_size_kb: 64,
+  frame_trace: false,
+  frame_trace_capacity: 36000,
+  frame_trace_path: 'frame_trace.csv',
   rtss_install_path: '',
   rtss_frame_limit_type: 'async',
   lossless_scaling_path: '',

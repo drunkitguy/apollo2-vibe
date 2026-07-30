@@ -62,6 +62,16 @@ namespace stream {
 
     uint32_t encryptionFlagsEnabled;
 
+    /// Client advertised ML_FF_LATENCY_TRACE in `x-ml-general.featureFlags` and the host
+    /// had `frame_trace` enabled when it answered DESCRIBE. Fixed for the lifetime of the
+    /// session: there is no mechanism to renegotiate it mid-stream, and unsolicited trace
+    /// traffic from the peer is ignored while it is false.
+    bool frameTrace;
+
+    /// Frame timestamp extension version agreed for this session, `min(peer, ours)`.
+    /// Only meaningful when `frameTrace` is set. Also fixed for the session's lifetime.
+    int frameTraceExtVersion;
+
     std::optional<int> gcmap;
     bool gen1_framegen_fix;
     bool gen2_framegen_fix;

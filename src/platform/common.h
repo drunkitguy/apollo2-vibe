@@ -273,6 +273,12 @@ namespace platf {
 
     constexpr caps_t pen_touch = 0x01;  // Pen and touch events
     constexpr caps_t controller_touch = 0x02;  // Controller touch events
+
+    // 0x04 is SS_FF_LATENCY_TRACE. It is not a platform capability, so it isn't reported by
+    // get_capabilities(); src/rtsp.cpp ORs it into x-ss-general.featureFlags when the frame
+    // trace is enabled. Reserved here so the next platform capability doesn't collide with
+    // it. See frame_trace::HOST_FF_LATENCY_TRACE.
+    constexpr caps_t reserved_latency_trace = 0x04;
   };  // namespace platform_caps
 
   struct gamepad_state_t {

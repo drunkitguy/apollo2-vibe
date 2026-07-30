@@ -2488,6 +2488,11 @@ namespace video {
     return probe_status.advertised_capabilities;
   }
 
+  /// Name of the encoder actually chosen by probing, for the trace CSV metadata.
+  std::string active_encoder_name() {
+    return chosen_encoder ? std::string {chosen_encoder->name} : std::string {};
+  }
+
   void reset_display(
     std::shared_ptr<platf::display_t> &disp,
     const platf::mem_type_e &type,
@@ -3039,7 +3044,8 @@ namespace video {
     void *channel_data,
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp,
     std::optional<std::chrono::steady_clock::time_point> capture_timestamp,
-    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp
+    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp,
+    frame_trace::host_stamps_t trace_stamps
   ) {
     auto &frame = session.device->frame;
     frame->pts = frame_nr;
@@ -3108,6 +3114,11 @@ namespace video {
         packet->host_processing_timestamp = host_processing_timestamp;
       }
 
+      if (frame_trace::enabled()) {
+        trace_stamps.encode_complete = frame_trace::now_us();
+      }
+
+      packet->trace_stamps = trace_stamps;
       packet->replacements = &session.replacements;
       packet->channel_data = channel_data;
       if (webrtc_stream::has_active_sessions()) {
@@ -3127,7 +3138,8 @@ namespace video {
     void *channel_data,
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp,
     std::optional<std::chrono::steady_clock::time_point> capture_timestamp,
-    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp
+    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp,
+    frame_trace::host_stamps_t trace_stamps
   ) {
     auto encoded_frame = session.encode_frame(frame_nr);
     if (encoded_frame.data.empty()) {
@@ -3139,12 +3151,17 @@ namespace video {
       BOOST_LOG(error) << "NvENC frame index mismatch " << frame_nr << " " << encoded_frame.frame_index;
     }
 
+    if (frame_trace::enabled()) {
+      trace_stamps.encode_complete = frame_trace::now_us();
+    }
+
     auto packet = std::make_unique<packet_raw_generic>(std::move(encoded_frame.data), encoded_frame.frame_index, encoded_frame.idr);
     packet->channel_data = channel_data;
     packet->after_ref_frame_invalidation = encoded_frame.after_ref_frame_invalidation;
     packet->frame_timestamp = frame_timestamp;
     packet->capture_timestamp = capture_timestamp ? capture_timestamp : frame_timestamp;
     packet->host_processing_timestamp = host_processing_timestamp;
+    packet->trace_stamps = trace_stamps;
     if (webrtc_stream::has_active_sessions()) {
       webrtc_stream::submit_video_packet(*packet);
     }
@@ -3231,16 +3248,24 @@ namespace video {
     void *channel_data,
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp,
     std::optional<std::chrono::steady_clock::time_point> capture_timestamp,
-    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp
+    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp,
+    frame_trace::host_stamps_t trace_stamps = {}
   ) {
     thread_local logging::min_max_avg_periodic_logger<double> encode_duration_logger(debug, "Video encode call duration", "ms");
     const auto encode_start = std::chrono::steady_clock::now();
+    if (frame_trace::enabled()) {
+      trace_stamps.encode_submit = frame_trace::now_us();
+    }
     int result = -1;
     if (auto avcodec_session = dynamic_cast<avcodec_encode_session_t *>(&session)) {
-      result = encode_avcodec(frame_nr, *avcodec_session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp);
+      result = encode_avcodec(frame_nr, *avcodec_session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp, trace_stamps);
     } else if (auto nvenc_session = dynamic_cast<nvenc_encode_session_t *>(&session)) {
-      result = encode_nvenc(frame_nr, *nvenc_session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp);
+      result = encode_nvenc(frame_nr, *nvenc_session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp, trace_stamps);
     } else if (auto amf_session = dynamic_cast<amf_encode_session_t *>(&session)) {
+      // AMF is pipelined and emits an earlier frame than the one submitted, so a per-frame
+      // stamp would have to travel with session.store_frame_timestamps() rather than with the
+      // call. AMD is out of scope for this project (SPEC 0), so the trace simply leaves these
+      // frames unstamped rather than attributing the wrong frame's timings.
       result = encode_amf(frame_nr, *amf_session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp);
     }
 
@@ -4833,9 +4858,14 @@ namespace video {
       std::optional<std::chrono::steady_clock::time_point> capture_timestamp;
       std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
       bool placeholder_input = bootstrap_state.current_input_placeholder;
+      frame_trace::host_stamps_t trace_stamps;
 
       // Encode at a minimum FPS to avoid image quality issues with static content
       if (!requested_idr_frame || images->peek()) {
+        if (frame_trace::enabled()) {
+          trace_stamps.capture_requested = frame_trace::now_us();
+        }
+
         auto image_wait_budget = max_frametime;
         if (bootstrap_state.should_encode_placeholder()) {
           // Prime a lookahead encoder immediately; waiting for minimum FPS between
@@ -4943,6 +4973,12 @@ namespace video {
 
           bootstrap_state.current_input_placeholder = placeholder_input;
 
+          if (frame_trace::enabled() && frame_timestamp) {
+            // The capture backend's own completion time, sampled before the duplicate frame
+            // coalescing below rewrites *frame_timestamp to the previous frame's value.
+            trace_stamps.capture_complete = std::chrono::duration_cast<std::chrono::microseconds>(frame_timestamp->time_since_epoch()).count();
+          }
+
           if (!placeholder_input) {
             bootstrap_state.real_frame_seen = true;
             if (!encode_frame_timestamp) {
@@ -4977,7 +5013,7 @@ namespace video {
         continue;
       }
 
-      if (encode(frame_nr++, *session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp)) {
+      if (encode(frame_nr++, *session, packets, channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp, trace_stamps)) {
         BOOST_LOG(error) << "Could not encode video packet"sv;
         native_amf_runtime_failed = native_amf_session;
         break;
@@ -5443,7 +5479,14 @@ namespace video {
             continue;
           }
 
-          if (encode(ctx->frame_nr++, *pos->session, ctx->packets, ctx->channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp)) {
+          // The synchronous capture path has no distinct "capture requested" hook -- the
+          // display drives us -- so that column stays unstamped for these encoders.
+          frame_trace::host_stamps_t trace_stamps;
+          if (frame_trace::enabled() && frame_timestamp) {
+            trace_stamps.capture_complete = std::chrono::duration_cast<std::chrono::microseconds>(frame_timestamp->time_since_epoch()).count();
+          }
+
+          if (encode(ctx->frame_nr++, *pos->session, ctx->packets, ctx->channel_data, frame_timestamp, capture_timestamp, host_processing_timestamp, trace_stamps)) {
             BOOST_LOG(error) << "Could not encode video packet"sv;
             ctx->shutdown_event->raise(true);
 

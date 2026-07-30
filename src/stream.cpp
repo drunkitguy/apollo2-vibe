@@ -39,6 +39,7 @@ extern "C" {
 #include "crypto.h"
 #include "display_device.h"
 #include "display_helper_integration.h"
+#include "frame_trace.h"
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
@@ -83,6 +84,7 @@ extern "C" {
 #define IDX_SET_CLIPBOARD 16
 #define IDX_FILE_TRANSFER_NONCE_REQUEST 17
 #define IDX_SET_ADAPTIVE_TRIGGERS 18
+#define IDX_CLOCK_SYNC_REQUEST 19
 
 static const short packetTypes[] = {
   0x0305,  // Start A
@@ -104,6 +106,7 @@ static const short packetTypes[] = {
   0x3001,  // Set Clipboard (Apollo protocol extension)
   0x3002,  // File transfer nonce request (Apollo protocol extension)
   0x5503,  // Set Adaptive triggers (Sunshine protocol extension)
+  0x3010,  // Latency trace clock sync request (Apollo protocol extension)
 };
 
 namespace asio = boost::asio;
@@ -316,6 +319,23 @@ namespace stream {
     "Short frame header must be 8 bytes"
   );
 
+  /**
+   * @brief Short frame header plus the in-band host timestamp extension.
+   * @details Sent in place of the plain short header only when the client advertised
+   *          ML_FF_LATENCY_TRACE. The leading 8 bytes keep the stock layout, so the only
+   *          thing distinguishing the two is `headerType`, which lets a client that did
+   *          not advertise the capability keep sizing the header the way it always did.
+   */
+  struct video_traced_frame_header_t {
+    video_short_frame_header_t short_header;
+    frame_trace::frame_timestamp_ext_t trace;
+  };
+
+  static_assert(
+    sizeof(video_traced_frame_header_t) == 56,
+    "Traced frame header must be the 8 byte short header plus the 48 byte extension"
+  );
+
   struct video_packet_raw_t {
     uint8_t *payload() {
       return (uint8_t *) (this + 1);
@@ -400,6 +420,12 @@ namespace stream {
     std::uint8_t type_right;
     std::uint8_t left[DS_EFFECT_PAYLOAD_SIZE];
     std::uint8_t right[DS_EFFECT_PAYLOAD_SIZE];
+  };
+
+  struct control_clock_sync_response_t {
+    control_header_v2 header;
+
+    frame_trace::clock_sync_response_t body;
   };
 
   struct control_hdr_mode_t {
@@ -620,6 +646,19 @@ namespace stream {
       platf::feedback_queue_t feedback_queue;
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
     } control;
+
+    /// This session started the global frame trace, so its frames are the ones that go
+    /// into the ring buffer and it is the session that flushes it.
+    ///
+    /// Written once in session::start() and never modified afterwards. The reader that
+    /// matters is videoBroadcastThread, which is process-global and long-running, so the
+    /// session's own std::thread constructor orders nothing for it. The ordering comes
+    /// from the packet queue instead: session::start() writes this field before creating
+    /// session.videoThread, that thread is the only thing that ever raises a packet
+    /// carrying this session's pointer into mail::video_packets, and the queue's mutex
+    /// gives the broadcast thread a happens-before edge back to the write. session::join()
+    /// reads it on the same thread that wrote it.
+    bool frame_trace_owner = false;
 
     std::uint32_t launch_session_id;
     std::mutex metadata_mutex;
@@ -1525,6 +1564,59 @@ namespace stream {
       }
     });
 
+    server->map(packetTypes[IDX_CLOCK_SYNC_REQUEST], [server](session_t *session, const std::string_view &payload) {
+      // Take t2 before anything else so it is as close to the actual arrival as this
+      // thread can get. t3 is taken on the same thread just before the send, so the pair
+      // brackets only our own handling and the client can subtract it from the RTT.
+      auto t2 = frame_trace::now_us();
+
+      if (!session->config.frameTrace) {
+        // The peer never advertised the capability. Dropping the request rather than
+        // answering it keeps a client that changes its mind mid-session from getting half
+        // a feature: it will never receive the frame header extension either.
+        BOOST_LOG(debug) << "type [IDX_CLOCK_SYNC_REQUEST] dropped, latency trace not negotiated"sv;
+        return;
+      }
+
+      // The encrypted dispatch path strips the type and the payload length, the plain one
+      // only strips the type. Accept either framing rather than assuming the encrypted
+      // control stream is in use.
+      auto body = payload;
+      if (body.size() == sizeof(frame_trace::clock_sync_request_t) + sizeof(std::uint16_t)) {
+        body = body.substr(sizeof(std::uint16_t));
+      }
+
+      if (body.size() < sizeof(frame_trace::clock_sync_request_t)) {
+        BOOST_LOG(warning) << "Frame trace: runt clock sync request ("sv << payload.size() << " bytes)"sv;
+        return;
+      }
+
+      frame_trace::clock_sync_request_t request;
+      std::memcpy(&request, body.data(), sizeof(request));
+
+      control_clock_sync_response_t plaintext;
+
+      plaintext.header.type = frame_trace::CLOCK_SYNC_RESPONSE_PTYPE;
+      plaintext.header.payloadLength = sizeof(plaintext.body);
+      plaintext.body.sequence_number = request.sequence_number;
+      plaintext.body.reserved = 0;
+      plaintext.body.client_tx_us = request.client_tx_us;
+      plaintext.body.host_rx_us = t2;
+      plaintext.body.host_tx_us = frame_trace::now_us();
+
+      std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
+        encrypted_payload;
+
+      auto encoded = encode_control(session, util::view(plaintext), encrypted_payload);
+      if (encoded.empty() || !session->control.peer) {
+        return;
+      }
+
+      if (server->send(encoded, session->control.peer)) {
+        BOOST_LOG(warning) << "Frame trace: couldn't send clock sync response"sv;
+      }
+    });
+
     server->map(packetTypes[IDX_ENCRYPTED], [server](session_t *session, const std::string_view &payload) {
       BOOST_LOG(verbose) << "type [IDX_ENCRYPTED]"sv;
 
@@ -1946,14 +2038,50 @@ namespace stream {
         }
       }
 
-      video_short_frame_header_t frame_header = {};
-      frame_header.headerType = 0x01;  // Short header type
+      const bool trace_this_frame = session->config.frameTrace;
+      const auto frame_header_size = trace_this_frame ? sizeof(video_traced_frame_header_t) : sizeof(video_short_frame_header_t);
+      const auto encoded_frame_size = packet->data_size();
+
+      video_traced_frame_header_t frame_header_storage = {};
+      auto &frame_header = frame_header_storage.short_header;
+      frame_header.headerType = trace_this_frame ? frame_trace::FRAME_HDR_DISC_SHORT_TRACE : frame_trace::FRAME_HDR_DISC_SHORT;
       frame_header.frameType = packet->is_idr()                     ? 2 :
                                packet->after_ref_frame_invalidation ? 5 :
                                                                       1;
-      frame_header.lastPayloadLen = (payload.size() + sizeof(frame_header)) % (session->config.packetsize - sizeof(NV_VIDEO_PACKET));
+      frame_header.lastPayloadLen = (payload.size() + frame_header_size) % (session->config.packetsize - sizeof(NV_VIDEO_PACKET));
       if (frame_header.lastPayloadLen == 0) {
         frame_header.lastPayloadLen = session->config.packetsize - sizeof(NV_VIDEO_PACKET);
+      }
+
+      if (frame_trace::enabled()) {
+        // Last point at which the frame header can still be written: everything after this
+        // is covered by the FEC parity computed during packetisation.
+        packet->trace_stamps.tx_pipeline_entry = frame_trace::now_us();
+      }
+
+      if (trace_this_frame) {
+        const auto &stamps = packet->trace_stamps;
+        auto &trace = frame_header_storage.trace;
+        trace.ext_version = (std::uint8_t) session->config.frameTraceExtVersion;
+
+        // Not every stage produces a timestamp on every frame: a repeated frame on the
+        // minimum-FPS path never completed a capture, and the synchronous capture path has
+        // no "capture requested" hook at all. Zero is a legal clock value, so the client is
+        // told which fields to read rather than being left to guess. Version 1 has no room
+        // for that, so the byte stays reserved and zero there.
+        if (session->config.frameTraceExtVersion >= frame_trace::FRAME_TIMESTAMP_EXT_VERSION_VALIDITY_MASK) {
+          trace.validity_mask = frame_trace::validity_mask_for(stamps);
+        }
+
+        // Truncated the same way NV_VIDEO_PACKET::frameIndex is below, so the client joins
+        // on the value it already has. The host CSV keeps the full 64-bit index, which is
+        // what disambiguates the join after the 32-bit value wraps.
+        trace.frame_index = (std::uint32_t) packet->frame_index();
+        trace.capture_requested_us = stamps.capture_requested;
+        trace.capture_complete_us = stamps.capture_complete;
+        trace.encode_submit_us = stamps.encode_submit;
+        trace.encode_complete_us = stamps.encode_complete;
+        trace.tx_pipeline_entry_us = stamps.tx_pipeline_entry;
       }
 
       auto host_processing_timestamp = packet->host_processing_timestamp ? packet->host_processing_timestamp : packet->frame_timestamp;
@@ -1977,7 +2105,7 @@ namespace stream {
       // Insert space for packet headers
       auto blocksize = session->config.packetsize + MAX_RTP_HEADER_SIZE;
       auto payload_blocksize = blocksize - sizeof(video_packet_raw_t);
-      auto payload_new = concat_and_insert(sizeof(video_packet_raw_t), payload_blocksize, std::string_view {(char *) &frame_header, sizeof(frame_header)}, payload);
+      auto payload_new = concat_and_insert(sizeof(video_packet_raw_t), payload_blocksize, std::string_view {(char *) &frame_header_storage, frame_header_size}, payload);
 
       payload = std::string_view {(char *) payload_new.data(), payload_new.size()};
 
@@ -2087,6 +2215,9 @@ namespace stream {
 
         size_t ratecontrol_frame_packets_sent = 0;
         size_t ratecontrol_group_packets_sent = 0;
+
+        // Stamped once, on the first batch of the frame's first FEC block
+        std::int64_t t_first_packet_tx = 0;
 
         auto blockIndex = 0;
         std::for_each(fec_blocks_begin, fec_blocks_end, [&](std::string_view &current_payload) {
@@ -2208,6 +2339,10 @@ namespace stream {
               batch_info.block_offset = next_shard_to_send;
               batch_info.block_count = current_batch_size;
 
+              if (t_first_packet_tx == 0 && frame_trace::enabled()) {
+                t_first_packet_tx = frame_trace::now_us();
+              }
+
               frame_send_batch_latency_logger.first_point_now();
               // Use a batched send if it's supported on this platform
               if (!platf::send_batch(batch_info)) {
@@ -2262,6 +2397,12 @@ namespace stream {
         auto bytes_per_packet = blocksize + ((session->config.encryptionFlagsEnabled & SS_ENC_VIDEO) ? sizeof(video_packet_enc_prefix_t) : 0);
         session->stats.bytes_sent.fetch_add(ratecontrol_frame_packets_sent * bytes_per_packet, std::memory_order_relaxed);
         session->stats.last_frame_index.store(packet->frame_index(), std::memory_order_relaxed);
+        // Only the video broadcast thread ever calls this, so the recorder has a single
+        // producer. Restricted to the session that owns the trace, otherwise a second
+        // concurrent stream would interleave its frames into the same CSV.
+        if (session->frame_trace_owner) {
+          frame_trace::submit(packet->frame_index(), packet->trace_stamps, t_first_packet_tx, encoded_frame_size, packet->is_idr());
+        }
       } catch (const std::exception &e) {
         BOOST_LOG(error) << "Broadcast video failed "sv << e.what();
         std::this_thread::sleep_for(100ms);
@@ -2919,6 +3060,14 @@ namespace stream {
         BOOST_LOG(debug) << "Waiting for control to end..."sv;
         session.controlEnd.view();
       }
+
+      // Flush the trace once every thread that could still stamp a frame for this session has
+      // been joined above. The shared video broadcast thread may still be draining packets
+      // queued before videoThread exited, but submit() and the flush take the same lock, so the
+      // worst case is a few trailing frames arriving too late to be written, not a torn record.
+      if (session.frame_trace_owner) {
+        frame_trace::end_session();
+      }
       // Watchdog coverage ends with the thread joins, which are the unbounded and
       // unrecoverable part. Everything below waits on the process-wide lifecycle
       // gate, which other threads legitimately hold for much longer than
@@ -3063,6 +3212,30 @@ namespace stream {
       session.audio.peer.port(0);
 
       session.pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
+
+      {
+        frame_trace::metadata_t meta;
+        meta.width = session.config.monitor.width;
+        meta.height = session.config.monitor.height;
+        meta.framerate = session.config.monitor.framerate;
+        meta.bitrate_kbps = session.config.monitor.bitrate;
+        meta.video_format = session.config.monitor.videoFormat;
+        meta.chroma_sampling_type = session.config.monitor.chromaSamplingType;
+        meta.dynamic_range = session.config.monitor.dynamicRange;
+        meta.slices_per_frame = session.config.monitor.slicesPerFrame;
+        meta.num_ref_frames = session.config.monitor.numRefFrames;
+        meta.encoder_csc_mode = session.config.monitor.encoderCscMode;
+        meta.intra_refresh = session.config.monitor.enableIntraRefresh;
+        meta.encoder = video::active_encoder_name();
+        meta.capture = config::video.capture;
+        meta.client = session.device_name;
+        meta.trace_ext_negotiated = session.config.frameTrace;
+        if (session.config.frameTrace) {
+          meta.trace_ext_version = session.config.frameTraceExtVersion;
+        }  // else leave it 0: no extension was emitted, so no version applies
+
+        session.frame_trace_owner = frame_trace::begin_session(meta);
+      }
 
       session.audioThread = std::thread {audioThread, &session};
       session.videoThread = std::thread {videoThread, &session};

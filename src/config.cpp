@@ -952,6 +952,13 @@ namespace config {
     true,  // wgc_pacing_smoothing
     "1920x1080x60",  // fallback_mode
     false,  // ignore_encoder_probe_failure
+
+    // Vibepollo dropped the `isolated Display` bool that ClassicOldSong had here, so our side's
+    // initialiser for it is deliberately not carried across: keeping it would shift every
+    // subsequent positional default by one.
+    false,  // frame_trace
+    36000,  // frame_trace_capacity (5 minutes at 120 fps)
+    "frame_trace.csv"s,  // frame_trace_path
   };
 
   audio_t audio {
@@ -1991,6 +1998,9 @@ namespace config {
     }
     string_f(vars, "lossless_scaling_path", lossless_scaling.exe_path);
     bool_f(vars, "lossless_scaling_legacy_auto_detect", lossless_scaling.legacy_auto_detect);
+    bool_f(vars, "frame_trace", video.frame_trace);
+    int_between_f(vars, "frame_trace_capacity", video.frame_trace_capacity, {1, 1000000});
+    path_f(vars, "frame_trace_path", video.frame_trace_path);
 
     path_f(vars, "pkey", nvhttp.pkey);
     path_f(vars, "cert", nvhttp.cert);

@@ -2893,6 +2893,118 @@ They appear in the Frame Limiter section of the settings UI.
 
 @note{Legacy configurations may still use @code{rtss_disable_vsync_ullm}. Sunshine continues to accept the old key and maps it to @code{frame_limiter_disable_vsync}.}
 
+## Frame Latency Trace
+
+### frame_trace
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Record a per-frame latency trace. For every encoded video frame the host stamps when capture was
+            requested, when capture completed, when the frame was submitted to the encoder, when the encoder
+            returned it, and when its first packet went out on the wire. Records go into a fixed-size in-memory
+            ring buffer and are written out as CSV once, when the session ends — nothing touches the disk while
+            a stream is running.
+            <br><br>
+            When the client advertises support for it during the RTSP handshake, the same host timestamps also
+            travel in-band in an extension on the video frame header, so a client-side trace can be joined
+            against the host CSV on <code>frame_id</code>. The extension is only ever sent to a client that
+            advertised the capability; against any other client the wire format is unchanged.
+            @note{Not every stage produces a timestamp on every frame. A repeated frame emitted by the
+            minimum-FPS path never completed a capture, and the synchronous capture path has no "capture
+            requested" hook. The extension carries a validity mask saying which fields were measured, and the
+            CSV writes 0 for the rest — 0 always means "not measured", never a real time.}
+            @note{The extension format is versioned and negotiated. The host advertises the highest version it
+            can emit as <code>x-ss-general.traceExtVersion</code> and emits whichever version the client also
+            understands, treating a client that advertises nothing as version 1. The negotiated version is
+            written to the log at session start and recorded in the CSV as <code>trace_ext_version</code>; if
+            the client never negotiated the extension at all, the log says so, because the symptom otherwise
+            looks identical to a broken trace.}
+            @warning{The extension's last timestamp is <code>tx_pipeline_entry_us</code>: the moment the frame
+            entered the transmit pipeline, <em>not</em> the moment its first packet left. The frame header is
+            covered by the FEC parity computed during packetisation, so it cannot be amended once the real
+            transmit timestamp exists. Between the two the host generates Reed-Solomon parity for the whole
+            frame, AES-GCM encrypts every shard when video encryption is enabled, and may sleep for intra-frame
+            pacing. Do not compute one-way delay from it. The true value is the host CSV's
+            <code>t_first_packet_tx</code> column, and each run reports the measured p50, p99 and maximum of the
+            difference in its <code>tx_pipeline_entry_bias_us_*</code> metadata lines.}
+            @note{This is a diagnostic tool. Leave it disabled for normal use.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            frame_trace = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### frame_trace_capacity
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Number of frames the trace ring buffer holds. Once it is full the oldest records are overwritten, so
+            only the tail of a long session survives; the CSV header reports how many frames were dropped. The
+            default is five minutes at 120 fps and costs 2.3 MB of resident memory while streaming (each record is
+            64 bytes).
+            @note{This option only has an effect when [frame_trace](#frame_trace) is enabled.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            36000
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">@code{}
+            1 to 1000000
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            frame_trace_capacity = 36000
+            @endcode</td>
+    </tr>
+</table>
+
+### frame_trace_path
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Where the trace CSV is written. Relative paths resolve against Apollo's configuration directory. The
+            wall clock time the session started is inserted before the extension, so consecutive runs never
+            overwrite each other.
+            @note{This option only has an effect when [frame_trace](#frame_trace) is enabled.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            frame_trace.csv
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            frame_trace_path = frame_trace.csv
+            @endcode</td>
+    </tr>
+</table>
+
 ## NVIDIA NVENC Encoder
 
 ### nvenc_preset

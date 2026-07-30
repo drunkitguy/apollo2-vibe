@@ -1560,6 +1560,10 @@
         },
         "video_quality": {
           "title": "Quality and transport budget"
+        },
+        "video_trace": {
+          "description": "Diagnostic per-frame timing capture. Leave off for normal use.",
+          "title": "Frame latency trace"
         }
       },
       "loading": "Loading settings",
