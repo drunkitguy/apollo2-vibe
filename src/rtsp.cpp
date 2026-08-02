@@ -32,6 +32,7 @@ extern "C" {
 
 // local includes
 #include "config.h"
+#include "focus_hints.h"
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
@@ -1415,8 +1416,14 @@ namespace rtsp_stream {
 
     std::stringstream ss;
 
-    // Tell the client about our supported features
-    ss << "a=x-ss-general.featureFlags:" << (uint32_t) platf::get_capabilities() << std::endl;
+    // Tell the client about our supported features. Most of these are platform input
+    // capabilities; the focus hint bit is a host-level stream capability and so is added
+    // here rather than inside platf::get_capabilities().
+    uint32_t feature_flags = platf::get_capabilities();
+    if (config::video.focus_hints) {
+      feature_flags |= focus_hints::HOST_FF_TEXT_FOCUS;
+    }
+    ss << "a=x-ss-general.featureFlags:" << feature_flags << std::endl;
 
     // Always request new control stream encryption if the client supports it
     uint32_t encryption_flags_supported = SS_ENC_CONTROL_V2 | SS_ENC_AUDIO;
@@ -1676,6 +1683,11 @@ namespace rtsp_stream {
       config.monitor.chromaSamplingType = (int) util::from_view(args.at("x-ss-video[0].chromaSamplingType"sv));
       config.monitor.enableIntraRefresh = (int) util::from_view(args.at("x-ss-video[0].intraRefresh"sv));
       config.monitor.vrr_low_latency = session->client_vrr_requested;
+
+      // Focus hints only flow when both halves agree, so an unpatched peer on either side
+      // sees exactly the traffic it sees today.
+      config.focusHints = config::video.focus_hints &&
+                          (config.mlFeatureFlags & focus_hints::CLIENT_FF_TEXT_FOCUS) != 0;
 
       if (config::video.limit_framerate) {
         config.monitor.encodingFramerate = session->fps;

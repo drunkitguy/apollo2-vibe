@@ -56,6 +56,7 @@ namespace mail {
   MAIL(gamepad_feedback);
   MAIL(hdr);
   MAIL(dynamic_bitrate);  // Runtime encoder bitrate change (kbps), posted from the HTTP /bitrate handler
+  MAIL(focus_hint);
 #undef MAIL
 
 }  // namespace mail

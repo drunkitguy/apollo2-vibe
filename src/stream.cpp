@@ -39,6 +39,7 @@ extern "C" {
 #include "crypto.h"
 #include "display_device.h"
 #include "display_helper_integration.h"
+#include "focus_hints.h"
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
@@ -402,6 +403,12 @@ namespace stream {
     std::uint8_t right[DS_EFFECT_PAYLOAD_SIZE];
   };
 
+  struct control_focus_hint_t {
+    control_header_v2 header;
+
+    focus_hints::focus_hint_t body;
+  };
+
   struct control_hdr_mode_t {
     control_header_v2 header;
 
@@ -619,7 +626,21 @@ namespace stream {
 
       platf::feedback_queue_t feedback_queue;
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
+
+      /// Focus classifications from the detector thread, drained by the control thread.
+      /// The detector never touches the ENet peer itself — the control thread owns it, and
+      /// a UI Automation call that blocks for seconds must not be able to stall a send.
+      safe::mail_raw_t::queue_t<focus_hints::kind_t> focus_queue;
+
+      /// Monotonic per session, starting at 1, so the client can drop a stale hint.
+      /// Only ever incremented on the control thread in send_focus_hint().
+      std::uint32_t focus_sequence;
     } control;
+
+    /// This session started the global focus detector and must stop it. Written once in
+    /// session::start() before the detector exists, read in session::join() on the same
+    /// thread, so no synchronisation is needed.
+    bool focus_monitor_owner = false;
 
     std::uint32_t launch_session_id;
     std::mutex metadata_mutex;
@@ -1300,6 +1321,36 @@ namespace stream {
     return 0;
   }
 
+  int send_focus_hint(session_t *session, focus_hints::kind_t kind) {
+    if (!session->control.peer) {
+      // Nothing to do: focus state is edge triggered, and the next change will be sent
+      // once the peer arrives.
+      return -1;
+    }
+
+    control_focus_hint_t plaintext {};
+    plaintext.header.type = focus_hints::FOCUS_HINT_PTYPE;
+    plaintext.header.payloadLength = sizeof(control_focus_hint_t) - sizeof(control_header_v2);
+
+    plaintext.body.version = focus_hints::FOCUS_HINT_VERSION;
+    plaintext.body.focus_type = (std::uint8_t) kind;
+    plaintext.body.reserved = 0;
+    plaintext.body.sequence_number = ++session->control.focus_sequence;
+
+    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
+      encrypted_payload;
+
+    auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
+    if (session->broadcast_ref->control_server.send(payload, session->control.peer)) {
+      TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session->control.peer->address.address));
+      BOOST_LOG(warning) << "Couldn't send focus hint to ["sv << addr << ':' << port << ']';
+
+      return -1;
+    }
+
+    return 0;
+  }
+
   int send_hdr_mode(session_t *session, video::hdr_info_t hdr_info) {
     if (!session->control.peer) {
       BOOST_LOG(warning) << "Couldn't send HDR mode, still waiting for PING from Moonlight"sv;
@@ -1719,6 +1770,14 @@ namespace stream {
               auto hdr_info = hdr_queue->pop();
 
               send_hdr_mode(session, std::move(hdr_info));
+            }
+
+            auto &focus_queue = session->control.focus_queue;
+            while (session->control.peer && focus_queue->peek()) {
+              auto kind = focus_queue->pop();
+              if (kind) {
+                send_focus_hint(session, *kind);
+              }
             }
           }
 
@@ -2901,6 +2960,16 @@ namespace stream {
         }
       });
 
+      // Stop the detector before the control thread goes away, so its final "focus is
+      // gone" hint has somewhere to be queued and nothing calls back into a dead session.
+      // This has to precede the joins below rather than follow them: the control thread is
+      // the consumer of the hint queue and controlEnd is waited on down there.
+      if (session.focus_monitor_owner) {
+        BOOST_LOG(debug) << "Waiting for focus monitor to end..."sv;
+        focus_hints::stop();
+        session.focus_monitor_owner = false;
+      }
+
       // Current Nvidia drivers have a bug where NVENC can deadlock the encoder thread with hardware-accelerated
       // GPU scheduling enabled. If this happens, we will terminate ourselves and the service can restart.
       // The alternative is that Sunshine can never start another session until it's manually restarted.
@@ -3063,6 +3132,16 @@ namespace stream {
       session.audio.peer.port(0);
 
       session.pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
+
+      if (session.config.focusHints) {
+        // The detector calls back on its own thread. All it does here is post to the
+        // queue the control thread drains, so a UI Automation call that blocks for
+        // seconds can delay a hint but cannot stall the control channel or anything else.
+        auto focus_queue = session.control.focus_queue;
+        session.focus_monitor_owner = focus_hints::start([focus_queue](focus_hints::kind_t kind) {
+          focus_queue->raise(kind);
+        });
+      }
 
       session.audioThread = std::thread {audioThread, &session};
       session.videoThread = std::thread {videoThread, &session};
@@ -3239,6 +3318,8 @@ namespace stream {
       session->control.connect_data = launch_session.control_connect_data;
       session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);
       session->control.hdr_queue = mail->event<video::hdr_info_t>(mail::hdr);
+      session->control.focus_queue = mail->queue<focus_hints::kind_t>(mail::focus_hint);
+      session->control.focus_sequence = 0;
       session->control.legacy_input_enc_iv = launch_session.iv;
       session->control.cipher = crypto::cipher::gcm_t {
         launch_session.gcm_key,

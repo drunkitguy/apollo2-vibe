@@ -2893,6 +2893,49 @@ They appear in the Frame Limiter section of the settings UI.
 
 @note{Legacy configurations may still use @code{rtss_disable_vsync_ullm}. Sunshine continues to accept the old key and maps it to @code{frame_limiter_disable_vsync}.}
 
+## Client Interaction Hints
+
+### focus_hints
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Tell the client when a text field takes focus on the host, so it can raise its on-screen keyboard
+            without the user asking, and a numeric keypad when the field only accepts digits. The client cannot
+            work this out from the video stream, so the host classifies the focused element and sends the result
+            on the existing control channel.
+            <br><br>
+            Sent only to a client that advertised support for it, so a client that doesn't understand it sees
+            exactly the traffic it sees today. Nothing is sent while the classification is unchanged, and rapid
+            focus changes are debounced into a single message, because the control channel also carries input.
+            @warning{This only works for applications that expose their controls to Windows accessibility.
+            Most desktop applications, browsers and Electron apps do. <strong>A game that renders its own
+            interface exposes nothing</strong>, so this will silently do nothing inside one — that is a limit of
+            what the operating system can see, not a fault in the feature.}
+            @note{Numeric detection is narrower than text detection. Windows only reports "this field takes
+            digits" for classic edit controls carrying the <code>ES_NUMBER</code> style; UI Automation has no
+            property for it at all. A numeric field in a browser or a modern application is therefore reported
+            as ordinary text, and the client raises a normal keyboard. Password fields are detected reliably
+            everywhere.}
+            @note{When disabled no accessibility hooks are installed, no UI Automation client is created and no
+            detector thread is started. The detector never runs on the capture, encode or control threads.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            focus_hints = enabled
+            @endcode</td>
+    </tr>
+</table>
+
 ## NVIDIA NVENC Encoder
 
 ### nvenc_preset

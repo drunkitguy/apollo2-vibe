@@ -952,6 +952,11 @@ namespace config {
     true,  // wgc_pacing_smoothing
     "1920x1080x60",  // fallback_mode
     false,  // ignore_encoder_probe_failure
+
+    // Vibepollo dropped the `isolated Display` bool that ClassicOldSong had here, so our
+    // side's initialiser for it is deliberately not carried across: keeping it would shift
+    // every subsequent positional default by one.
+    false,  // focus_hints
   };
 
   audio_t audio {
@@ -1947,6 +1952,7 @@ namespace config {
 
     string_f(vars, "fallback_mode", video.fallback_mode);
     bool_f(vars, "ignore_encoder_probe_failure", video.ignore_encoder_probe_failure);
+    bool_f(vars, "focus_hints", video.focus_hints);
 
     // Windows-only frame limiter options
     bool_f(vars, "frame_limiter_enable", frame_limiter.enable);
