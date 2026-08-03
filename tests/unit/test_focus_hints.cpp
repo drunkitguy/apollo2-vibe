@@ -68,6 +68,27 @@ TEST(FocusHintWireTests, FeatureFlagBits) {
   EXPECT_EQ(focus_hints::HOST_FF_TEXT_FOCUS & 0x04u, 0u);
 }
 
+// The lock screen hint is declared by the operator, so parsing it has to be exact and has
+// to fail safe: anything unrecognised must mean "send nothing", never a guessed keyboard.
+TEST(FocusHintTests, LockScreenHintParsing) {
+  EXPECT_EQ(focus_hints::kind_from_view("none"), focus_hints::kind_t::none);
+  EXPECT_EQ(focus_hints::kind_from_view("text"), focus_hints::kind_t::text);
+  EXPECT_EQ(focus_hints::kind_from_view("numeric"), focus_hints::kind_t::numeric);
+  EXPECT_EQ(focus_hints::kind_from_view("password"), focus_hints::kind_t::password);
+
+  // Anything else falls back to none rather than to a keyboard nobody asked for
+  EXPECT_EQ(focus_hints::kind_from_view(""), focus_hints::kind_t::none);
+  EXPECT_EQ(focus_hints::kind_from_view("pin"), focus_hints::kind_t::none);
+  EXPECT_EQ(focus_hints::kind_from_view("Numeric"), focus_hints::kind_t::none);
+  EXPECT_EQ(focus_hints::kind_from_view("enabled"), focus_hints::kind_t::none);
+  EXPECT_EQ(focus_hints::kind_from_view("2"), focus_hints::kind_t::none);
+}
+
+TEST(FocusHintTests, LockScreenHintDefaultsToNone) {
+  // Nobody should get a keyboard on their lock screen without asking for it
+  EXPECT_EQ(config::video.lock_screen_focus_hint, focus_hints::kind_t::none);
+}
+
 TEST(FocusHintTests, NamesForEveryKind) {
   EXPECT_STREQ(focus_hints::to_string(focus_hints::kind_t::none), "none");
   EXPECT_STREQ(focus_hints::to_string(focus_hints::kind_t::text), "text");

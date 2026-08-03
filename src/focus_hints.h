@@ -84,6 +84,13 @@ namespace focus_hints {
 
 #pragma pack(pop)
 
+  /**
+   * @brief Parse the `lock_screen_focus_hint` config value.
+   * @details Unrecognised values fall back to `none`, which emits nothing, because the
+   *          wrong keyboard is worse than no keyboard.
+   */
+  kind_t kind_from_view(const std::string &value);
+
   /// Invoked on the detector thread when the classification changes.
   using callback_t = std::function<void(kind_t)>;
 

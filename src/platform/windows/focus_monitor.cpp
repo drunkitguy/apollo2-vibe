@@ -5,6 +5,7 @@
 // standard includes
 #include <atomic>
 #include <chrono>
+#include <string>
 #include <thread>
 
 // platform includes
@@ -13,6 +14,7 @@
 #include <uiautomation.h>
 
 // local includes
+#include "src/config.h"
 #include "src/focus_hints.h"
 #include "src/logging.h"
 
@@ -45,12 +47,63 @@ namespace focus_hints::platf {
     constexpr DWORD UIA_CONNECTION_TIMEOUT_MS = 500;
     constexpr DWORD UIA_TRANSACTION_TIMEOUT_MS = 500;
 
+    /**
+     * @brief How often to check which desktop is receiving input.
+     * @details Two cheap syscalls, and only while the feature is enabled. The lock screen
+     *          is not a latency-critical event, so there is no reason to check faster.
+     */
+    constexpr auto DESKTOP_POLL_INTERVAL = 200ms;
+
+    /// The interactive desktop. Anything else — the lock screen, a UAC prompt, Ctrl-Alt-Del
+    /// — belongs to Winlogon and cannot be observed from here. See
+    /// input_desktop_is_observable().
+    constexpr auto DEFAULT_DESKTOP_NAME = L"Default";
+
     std::thread monitor_thread;
     std::atomic<bool> shutdown_requested {false};
     std::atomic<DWORD> monitor_thread_id {0};
 
     /// Set by the hook callback, consumed by the loop. Both on the detector thread.
     bool focus_event_pending = false;
+
+    /**
+     * @brief Whether the desktop currently receiving input is one this process can observe.
+     * @details The lock screen runs on the Winlogon secure desktop. A WinEvent hook is
+     *          scoped to the desktop of the thread that installed it and UI Automation is
+     *          likewise bound to the thread's desktop, so neither can see focus there —
+     *          which is why focus hints stop at the lock screen.
+     *
+     *          Rather than move the detector thread onto that desktop, this only asks which
+     *          desktop has input. The handle is opened and closed within this function and
+     *          is never retained, so there is nothing to go stale when the session is
+     *          switched — which the user's unlock command does, via tsdiscon/tscon.
+     * @param[out] name Desktop name when it could be read, for logging.
+     * @return `true` when input is on the default desktop and normal classification applies.
+     */
+    bool input_desktop_is_observable(std::wstring &name) {
+      name.clear();
+
+      // GENERIC_READ is enough for the name and avoids asking for rights on a secure
+      // desktop that we have no intention of touching.
+      auto desktop = OpenInputDesktop(0, FALSE, GENERIC_READ);
+      if (!desktop) {
+        // Typically means input is on a desktop this process may not open. Either way we
+        // cannot observe focus there, which is the answer the caller needs.
+        return false;
+      }
+
+      wchar_t buffer[64] = {};
+      DWORD needed = 0;
+      const bool got_name = GetUserObjectInformationW(desktop, UOI_NAME, buffer, sizeof(buffer), &needed);
+      CloseDesktop(desktop);
+
+      if (!got_name) {
+        return false;
+      }
+
+      name = buffer;
+      return name == DEFAULT_DESKTOP_NAME;
+    }
 
     /**
      * @brief Classify a focused window from its Win32 style bits alone.
@@ -215,6 +268,12 @@ namespace focus_hints::platf {
       auto last_sent = std::chrono::steady_clock::now() - MIN_SEND_INTERVAL;
       std::optional<std::chrono::steady_clock::time_point> settle_at;
 
+      // Seeded false so the first poll always evaluates and reports, whatever state the
+      // session is in when the stream starts.
+      bool observable = false;
+      bool have_observed = false;
+      auto next_desktop_poll = std::chrono::steady_clock::now();
+
       while (!shutdown_requested.load(std::memory_order_relaxed)) {
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -227,18 +286,41 @@ namespace focus_hints::platf {
           settle_at = std::chrono::steady_clock::now() + DEBOUNCE;
         }
 
+        // A desktop switch produces no focus event we can see, so it has to be polled.
+        // Treated as a focus change so it goes through the same debounce and rate limit.
+        if (std::chrono::steady_clock::now() >= next_desktop_poll) {
+          next_desktop_poll = std::chrono::steady_clock::now() + DESKTOP_POLL_INTERVAL;
+
+          std::wstring desktop_name;
+          const bool now_observable = input_desktop_is_observable(desktop_name);
+          if (!have_observed || now_observable != observable) {
+            have_observed = true;
+            observable = now_observable;
+            BOOST_LOG(debug) << "Focus hints: input desktop is "sv
+                             << (observable ? "observable"sv : "not observable, focus cannot be read there"sv);
+            settle_at = std::chrono::steady_clock::now() + DEBOUNCE;
+          }
+        }
+
         auto now = std::chrono::steady_clock::now();
         if (settle_at && now >= *settle_at && now - last_sent >= MIN_SEND_INTERVAL) {
           settle_at.reset();
 
-          // The cheap path first. When it answers, UI Automation is never consulted, which
-          // also means the numeric case costs two user32 calls and no COM at all.
           auto kind = kind_t::none;
-          GUITHREADINFO gui_info = {sizeof(GUITHREADINFO)};
-          if (GetGUIThreadInfo(0, &gui_info) && classify_from_window_style(gui_info.hwndFocus, kind)) {
-            // classified from style bits
+          if (!observable) {
+            // The lock screen, a UAC prompt or Ctrl-Alt-Del. Nothing here can read focus on
+            // the Winlogon desktop, so report whatever the operator configured for it —
+            // which is nothing at all unless they opted in.
+            kind = config::video.lock_screen_focus_hint;
           } else {
-            kind = classify_from_uia(uia);
+            // The cheap path first. When it answers, UI Automation is never consulted, which
+            // also means the numeric case costs two user32 calls and no COM at all.
+            GUITHREADINFO gui_info = {sizeof(GUITHREADINFO)};
+            if (GetGUIThreadInfo(0, &gui_info) && classify_from_window_style(gui_info.hwndFocus, kind)) {
+              // classified from style bits
+            } else {
+              kind = classify_from_uia(uia);
+            }
           }
 
           if (kind != reported) {

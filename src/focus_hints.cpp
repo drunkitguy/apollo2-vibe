@@ -24,6 +24,19 @@ namespace focus_hints {
     callback_t callback;
   }  // namespace
 
+  kind_t kind_from_view(const std::string &value) {
+    if (value == "text"sv) {
+      return kind_t::text;
+    }
+    if (value == "numeric"sv) {
+      return kind_t::numeric;
+    }
+    if (value == "password"sv) {
+      return kind_t::password;
+    }
+    return kind_t::none;
+  }
+
   const char *to_string(kind_t kind) {
     switch (kind) {
       case kind_t::none:
