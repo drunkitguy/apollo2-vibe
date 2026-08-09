@@ -971,6 +971,9 @@ namespace config {
     20,  // fecPercentage
     64,  // video_max_batch_size_kb
 
+    false,  // fec_adaptive
+    10,  // fec_percentage_min -- deliberately not 0; see fec_adaptive.h
+
     ENCRYPTION_MODE_NEVER,  // lan_encryption_mode
     ENCRYPTION_MODE_OPPORTUNISTIC,  // wan_encryption_mode
 
@@ -2069,6 +2072,8 @@ namespace config {
 #endif
 
     int_between_f(vars, "fec_percentage", stream.fec_percentage, {1, 255});
+    bool_f(vars, "fec_adaptive", stream.fec_adaptive);
+    int_between_f(vars, "fec_percentage_min", stream.fec_percentage_min, {1, 255});
     int_between_f(vars, "pacing_max_bitrate_kbps", stream.pacing_max_bitrate_kbps, {0, 10000000});
     int_between_f(vars, "packetsize", stream.packetsize, {0, PACKETSIZE_MAX});
     int_between_f(vars, "video_max_batch_size_kb", stream.video_max_batch_size_kb, {0, 64});

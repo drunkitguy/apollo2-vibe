@@ -2412,6 +2412,78 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### fec_adaptive
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Reduce forward error correction while the client reports no packet loss, and restore
+            [fec_percentage](#fec_percentage) in full the instant any loss is reported.
+            <br><br>
+            FEC costs bandwidth on every frame whether or not it is needed. On a link whose capacity is the
+            limiting factor, that overhead comes directly out of the latency budget — a measured 4K60 session
+            on this project's hardware ran at 110% send duty cycle with 0.00% loss, so a fifth of the
+            bottleneck was being spent on recovery that never recovered anything.
+            <br><br>
+            The control law is asymmetric, and deliberately the opposite way round from a congestion
+            controller: **loss restores full protection immediately**, while reduction takes roughly five
+            seconds of clean delivery per step. The cost of too little FEC is a visible glitch and a keyframe
+            recovery; the cost of too much is a few percent of bandwidth.
+            @note{Every adjustment is written to the log at info level. Adaptation hides configuration faults,
+            so a system that quietly settles on a different value must say what it did.}
+            @note{This changes nothing on the wire. The FEC percentage is already carried per frame in each
+            packet's header, and Apollo already varies it, so no client change or capability negotiation is
+            involved.}
+            Leave this disabled unless your link is bandwidth-constrained.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            fec_adaptive = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### fec_percentage_min
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            The lowest FEC percentage adaptation may fall to. Never crossed however clean the link looks.
+            @note{Deliberately not zero. One clean session is not proof of a lossless network, and a wireless
+            client can begin losing packets at any moment.}
+            @note{This option only has an effect when [fec_adaptive](#fec_adaptive) is enabled. If it is set
+            higher than [fec_percentage](#fec_percentage) the lower of the two wins, and the controller is
+            inert.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            10
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">1 to 255</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            fec_percentage_min = 10
+            @endcode</td>
+    </tr>
+</table>
+
 ### qp
 
 <table>

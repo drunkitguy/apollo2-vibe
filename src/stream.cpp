@@ -39,6 +39,7 @@ extern "C" {
 #include "crypto.h"
 #include "display_device.h"
 #include "display_helper_integration.h"
+#include "fec_adaptive.h"
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
@@ -576,6 +577,10 @@ namespace stream {
 
       std::optional<crypto::cipher::gcm_t> cipher;
       std::uint64_t gcm_iv_counter;
+
+      /// Loss-adaptive FEC percentage. Updated on the control stream thread from the client's
+      /// loss reports, read once per frame on the video broadcast thread. See fec_adaptive.h.
+      fec_adaptive::state_t fec_adaptive;
 
       safe::mail_raw_t::event_t<bool> idr_events;
       safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
@@ -1394,6 +1399,10 @@ namespace stream {
         << "time in milli since last report [" << t.count() << ']' << std::endl
         << "last good frame [" << lastGoodFrame << ']' << std::endl
         << "---end stats---";
+
+      // Until now this report was logged and discarded. It is the only loss signal the host
+      // gets, and it is exactly what the adaptive FEC controller needs.
+      fec_adaptive::on_loss_report(session->video.fec_adaptive, count, t);
     });
 
     server->map(packetTypes[IDX_REQUEST_IDR_FRAME], [&](session_t *session, const std::string_view &payload) {
@@ -1972,7 +1981,7 @@ namespace stream {
         session->stats.last_encode_latency_us10.store(0, std::memory_order_relaxed);
       }
 
-      auto fecPercentage = config::stream.fec_percentage;
+      auto fecPercentage = session->video.fec_adaptive.current_pct.load(std::memory_order_relaxed);
 
       // Insert space for packet headers
       auto blocksize = session->config.packetsize + MAX_RTP_HEADER_SIZE;
@@ -3249,6 +3258,7 @@ namespace stream {
       session->video.invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
       session->video.bitrate_events = mail->event<int>(mail::dynamic_bitrate);
       session->video.lowseq = 0;
+      fec_adaptive::begin_session(session->video.fec_adaptive);
       session->video.ping_payload = launch_session.av_ping_payload;
       if (config.encryptionFlagsEnabled & SS_ENC_VIDEO) {
         BOOST_LOG(info) << "Video encryption enabled"sv;

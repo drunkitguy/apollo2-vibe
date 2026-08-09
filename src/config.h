@@ -267,6 +267,12 @@ namespace config {
     int fec_percentage;
     int video_max_batch_size_kb;
 
+    /// Reduce FEC toward `fec_percentage_min` while the client reports no loss, and restore
+    /// `fec_percentage` immediately on any loss. Off by default.
+    bool fec_adaptive;
+    /// Floor for the adaptive controller. Never crossed however clean the link looks.
+    int fec_percentage_min;
+
     // Video encryption settings for LAN and WAN streams
     int lan_encryption_mode;
     int wan_encryption_mode;
