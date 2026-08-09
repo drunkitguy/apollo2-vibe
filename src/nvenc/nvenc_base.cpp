@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <format>
 #include <optional>
+#include <type_traits>
 
 // Make sure we check backwards compatibility when bumping the Video Codec SDK version
 // Things to look out for:
@@ -564,6 +565,51 @@ namespace nvenc {
 #endif
       };
 
+      // Gradual decoder refresh. Instead of a periodic IDR, which costs one large frame and a
+      // matching latency spike, the encoder sweeps intra-coded regions across the picture so the
+      // refresh cost is spread over many frames.
+      //
+      // Enabled by the host option `nvenc_intra_refresh` or by the client asking for it through
+      // x-ss-video[0].intraRefresh. Before this, the host option was parsed and then never read,
+      // so the web UI offered a control that did nothing.
+      //
+      // The period and count are the values the client-driven path has always used: a refresh wave
+      // 299 frames long repeating every 300, i.e. effectively continuous rolling refresh rather
+      // than an occasional burst. Kept identical so enabling the host option cannot change what a
+      // client that already asked for intra-refresh was getting.
+      const bool want_intra_refresh = config.intra_refresh || client_config.enableIntraRefresh == 1;
+
+      auto set_intra_refresh = [&](auto &format_config, bool supports_single_slice) {
+        if (!want_intra_refresh) {
+          return;
+        }
+        if (!get_encoder_cap(NV_ENC_CAPS_SUPPORT_INTRA_REFRESH)) {
+          // Say which side asked, so a user who set the option knows it was their request that
+          // could not be honoured rather than assuming the setting did nothing again.
+          BOOST_LOG(error) << "NvEnc: intra-refresh requested by "sv
+                           << (config.intra_refresh ? "the host configuration"sv : "the client"sv)
+                           << " but the encoder does not support it"sv;
+          return;
+        }
+
+        format_config.enableIntraRefresh = 1;
+        format_config.intraRefreshPeriod = 300;
+        format_config.intraRefreshCnt = 299;
+
+        if constexpr (!std::is_same_v<std::decay_t<decltype(format_config)>, NV_ENC_CONFIG_AV1>) {
+          // AV1 has neither outputRecoveryPointSEI nor singleSliceIntraRefresh; the H.264 and
+          // HEVC configs have both. The recovery point SEI is what tells a decoder joining
+          // mid-refresh when the picture becomes correct, and it is what the client-driven
+          // path already set, so it stays.
+          format_config.outputRecoveryPointSEI = 1;
+          if (supports_single_slice && get_encoder_cap(NV_ENC_CAPS_SINGLE_SLICE_INTRA_REFRESH)) {
+            format_config.singleSliceIntraRefresh = 1;
+          } else if (supports_single_slice) {
+            BOOST_LOG(warning) << "NvEnc: Single Slice Intra Refresh not supported"sv;
+          }
+        }
+      };
+
       switch (client_config.videoFormat) {
       case 0:
         {
@@ -585,21 +631,7 @@ namespace nvenc {
           set_ref_frames(format_config.maxNumRefFrames, format_config.numRefL0, 5);
           set_minqp_if_enabled(config.min_qp_h264);
           fill_h264_hevc_vui(format_config.h264VUIParameters);
-          if (client_config.enableIntraRefresh == 1) {
-            if (get_encoder_cap(NV_ENC_CAPS_SUPPORT_INTRA_REFRESH)) {
-              format_config.enableIntraRefresh = 1;
-              format_config.intraRefreshPeriod = 300;
-              format_config.intraRefreshCnt = 299;
-              format_config.outputRecoveryPointSEI = 1;
-              if (get_encoder_cap(NV_ENC_CAPS_SINGLE_SLICE_INTRA_REFRESH)) {
-                format_config.singleSliceIntraRefresh = 1;
-              } else {
-                BOOST_LOG(warning) << "NvEnc: Single Slice Intra Refresh not supported";
-              }
-            } else {
-              BOOST_LOG(error) << "NvEnc: Client asked for intra-refresh but the encoder does not support intra-refresh";
-            }
-          }
+          set_intra_refresh(format_config, true);
           break;
         }
 
@@ -627,21 +659,7 @@ namespace nvenc {
             format_config.outputMasteringDisplay = hdr_metadata.maxDisplayLuminance != 0;
           }
 #endif
-          if (client_config.enableIntraRefresh == 1) {
-            if (get_encoder_cap(NV_ENC_CAPS_SUPPORT_INTRA_REFRESH)) {
-              format_config.enableIntraRefresh = 1;
-              format_config.intraRefreshPeriod = 300;
-              format_config.intraRefreshCnt = 299;
-              format_config.outputRecoveryPointSEI = 1;
-              if (get_encoder_cap(NV_ENC_CAPS_SINGLE_SLICE_INTRA_REFRESH)) {
-                format_config.singleSliceIntraRefresh = 1;
-              } else {
-                BOOST_LOG(warning) << "NvEnc: Single Slice Intra Refresh not supported";
-              }
-            } else {
-              BOOST_LOG(error) << "NvEnc: Client asked for intra-refresh but the encoder does not support intra-refresh";
-            }
-          }
+          set_intra_refresh(format_config, true);
           break;
         }
 
@@ -685,6 +703,7 @@ namespace nvenc {
             format_config.numTileRows = std::pow(2, std::ceil(std::log2(client_config.slicesPerFrame) / 2));
             format_config.numTileColumns = std::pow(2, std::floor(std::log2(client_config.slicesPerFrame) / 2));
           }
+          set_intra_refresh(format_config, false);
           break;
         }
     }
@@ -829,6 +848,9 @@ namespace nvenc {
       }
       if (encoder_params.rfi) {
         extra += " rfi";
+      }
+      if (want_intra_refresh) {
+        extra += " intra-refresh";
       }
       if (init_params.enableWeightedPrediction) {
         extra += " weighted-prediction";

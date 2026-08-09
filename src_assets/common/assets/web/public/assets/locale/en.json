@@ -971,7 +971,7 @@
     "log_level_6": "None",
     "log_level_desc": "The minimum log level printed to standard out",
     "nvenc_intra_refresh": "Intra Refresh",
-    "nvenc_intra_refresh_desc": "Use periodic intra refresh instead of full keyframes when supported. Automatic leaves the encoder default.",
+    "nvenc_intra_refresh_desc": "Gradual decoder refresh. Instead of sending a periodic keyframe, which costs one large frame and a matching latency spike, the encoder sweeps intra-coded regions across the picture so the refresh cost is spread over many frames. Disabled still enables it when the client asks for it, which some clients need in order to render continuously (the Xbox client, for example); Enabled turns it on for every client regardless of what the client requested. Applies to H.264, HEVC and AV1 on NVENC.",
     "output_name_desc_linux": "During Vibepollo startup, you should see the list of detected displays. Note: You need to use the id value inside the parenthesis. Below is an example; the actual output can be found in the Troubleshooting tab.",
     "output_name_desc_macos": "During Vibepollo startup, you should see the list of detected displays. Note: You need to use the id value inside the parenthesis. Below is an example; the actual output can be found in the Troubleshooting tab.",
     "output_name_unix": "Display number",

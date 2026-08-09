@@ -3237,6 +3237,37 @@ They appear in the Frame Limiter section of the settings UI.
     </tr>
 </table>
 
+### nvenc_intra_refresh
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Gradual decoder refresh. Instead of sending a periodic keyframe, which costs one large frame and a
+            matching latency spike, the encoder sweeps intra-coded regions across the picture so the refresh
+            cost is spread over many frames.
+            <br><br>
+            <code>disabled</code> enables intra-refresh only when the client asks for it, which some clients
+            need in order to render continuously (the Xbox client, for example). <code>enabled</code> turns it
+            on for every client regardless of what the client requested.
+            @note{This option only applies when using the NVENC [encoder](#encoder), and only if the GPU
+            reports support for intra-refresh. It applies to H.264, HEVC and AV1.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            nvenc_intra_refresh = enabled
+            @endcode</td>
+    </tr>
+</table>
+
 ## Intel QuickSync Encoder
 
 ### qsv_preset
@@ -4352,10 +4383,6 @@ Enables legacy application ordering for clients and integrations that require it
 ### limit_framerate
 
 Limits capture and encoding to the requested stream frame rate.
-
-### nvenc_intra_refresh
-
-Uses NVIDIA intra refresh instead of full keyframes when supported.
 
 ### nvenc_temporal_aq
 
