@@ -3005,6 +3005,102 @@ They appear in the Frame Limiter section of the settings UI.
     </tr>
 </table>
 
+### input_trace
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Records how long input takes to travel from the client to the operating system. For each probed
+            event the host records when the probe arrived, when the event left the input queue, when it was
+            handed to Windows and when that call returned, into an in-memory ring buffer that is written out
+            as a CSV when the session ends. Nothing is written to disk while streaming.
+            <br><br>
+            When the client also advertises support, the host echoes its receive and injection timestamps back
+            over the control channel so the client can compute a round trip. The feature is negotiated in both
+            directions and is inert unless both halves are present, so it is safe to leave enabled with an
+            older client.
+            <br><br>
+            @note{The measurement ends at the injection call. On Windows, gamepad input is delivered through a
+            virtual controller driver, and after Apollo's call returns the driver must still deliver the report
+            and the game must still poll it. That stage is real and is not observable from user space, so it is
+            recorded in the CSV as an explicitly unmeasured stage rather than folded into any column.}
+            @note{Input events can be coalesced before injection: several client packets can merge into one
+            OS call. The CSV and the echo both report how many were merged, so a batched sample is not mistaken
+            for a per-event one.}
+            This is a diagnostic tool. Leave it disabled for normal use.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            input_trace = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### input_trace_capacity
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            How many input events the ring buffer holds. Once it is full the oldest records are overwritten, so
+            only the tail of a long session survives. The client bounds itself to at most 20 probes per second
+            regardless of input rate, so the default is over sixteen minutes of continuous probing.
+            @note{This option only has an effect when [input_trace](#input_trace) is enabled.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            20000
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">1 to 1000000</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            input_trace_capacity = 20000
+            @endcode</td>
+    </tr>
+</table>
+
+### input_trace_path
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Where the input trace CSV is written. Relative paths resolve against Apollo's configuration
+            directory. The wall clock time the session started is inserted before the extension, so consecutive
+            runs never overwrite each other.
+            @note{This option only has an effect when [input_trace](#input_trace) is enabled.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            input_trace.csv
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            input_trace_path = input_trace.csv
+            @endcode</td>
+    </tr>
+</table>
+
 ## NVIDIA NVENC Encoder
 
 ### nvenc_preset

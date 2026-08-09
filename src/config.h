@@ -326,6 +326,13 @@ namespace config {
 
     bool enable_input_only_mode;
     bool forward_rumble;
+
+    /// Opt-in per-event input latency trace. Off by default; costs nothing when off.
+    bool input_trace;
+    /// Ring buffer size in events. The buffer is allocated once at session start.
+    int input_trace_capacity;
+    /// CSV output file. The session's start time is inserted before the extension.
+    std::string input_trace_path;
   };
 
   struct frame_limiter_t {

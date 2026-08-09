@@ -72,6 +72,12 @@ namespace stream {
     /// Only meaningful when `frameTrace` is set. Also fixed for the session's lifetime.
     int frameTraceExtVersion;
 
+    /// Client advertised ML_FF_INPUT_PROBE in `x-ml-general.featureFlags` and the host had
+    /// `input_trace` enabled when it answered DESCRIBE. Fixed for the lifetime of the session,
+    /// exactly like `frameTrace`: input probes arriving while this is false are dropped rather
+    /// than answered, so a peer that changes its mind mid-session cannot get half a feature.
+    bool inputProbe;
+
     std::optional<int> gcmap;
     bool gen1_framegen_fix;
     bool gen2_framegen_fix;

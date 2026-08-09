@@ -33,6 +33,7 @@ extern "C" {
 // local includes
 #include "config.h"
 #include "frame_trace.h"
+#include "input_trace.h"
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
@@ -1423,6 +1424,9 @@ namespace rtsp_stream {
     if (config::video.frame_trace) {
       feature_flags |= frame_trace::HOST_FF_LATENCY_TRACE;
     }
+    if (config::input.input_trace) {
+      feature_flags |= input_trace::HOST_FF_INPUT_PROBE;
+    }
     ss << "a=x-ss-general.featureFlags:" << feature_flags << std::endl;
 
     if (config::video.frame_trace) {
@@ -1701,6 +1705,10 @@ namespace rtsp_stream {
       config.frameTraceExtVersion = frame_trace::negotiate_ext_version(
         util::from_view(args.at("x-ml-general.traceExtVersion"sv))
       );
+
+      // Same both-halves-must-agree rule as the frame trace, and deliberately independent of
+      // it: a client may want input probes without the video trace or the other way round.
+      config.inputProbe = config::input.input_trace && (config.mlFeatureFlags & input_trace::CLIENT_FF_INPUT_PROBE) != 0;
 
       if (config::video.limit_framerate) {
         config.monitor.encodingFramerate = session->fps;

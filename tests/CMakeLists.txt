@@ -404,6 +404,13 @@ sunshine_register_component(NAME test_component_frame_trace TEST_SOURCE unit/tes
         "SUNSHINE_TEST_BIN_DIR=\"${CMAKE_CURRENT_BINARY_DIR}\""
         "PROJECT_VERSION=\"${PROJECT_VERSION_FULL}\""
     LINK_LIBRARIES Boost::log Boost::process)
+sunshine_register_component(NAME test_component_input_trace TEST_SOURCE unit/test_input_trace.cpp
+    SUPPORT_SOURCES "${CMAKE_CURRENT_LIST_DIR}/support/input_trace_runtime_stubs.cpp"
+    PRODUCT_SOURCES
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/input_trace.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/frame_trace.cpp"
+    DEFINITIONS "PROJECT_VERSION=\"${PROJECT_VERSION_FULL}\""
+    LINK_LIBRARIES Boost::log Boost::process)
 sunshine_register_component(NAME test_component_resource_config_catalog TEST_SOURCE unit/test_config_catalog_contract.cpp
     INCLUDE_DIRECTORIES "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}")
 sunshine_register_component(NAME test_component_resource_locale_catalog TEST_SOURCE integration/test_locale_consistency.cpp

@@ -40,6 +40,7 @@ extern "C" {
 #include "display_device.h"
 #include "display_helper_integration.h"
 #include "frame_trace.h"
+#include "input_trace.h"
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
@@ -85,6 +86,7 @@ extern "C" {
 #define IDX_FILE_TRANSFER_NONCE_REQUEST 17
 #define IDX_SET_ADAPTIVE_TRIGGERS 18
 #define IDX_CLOCK_SYNC_REQUEST 19
+#define IDX_INPUT_PROBE 20
 
 static const short packetTypes[] = {
   0x0305,  // Start A
@@ -107,6 +109,7 @@ static const short packetTypes[] = {
   0x3002,  // File transfer nonce request (Apollo protocol extension)
   0x5503,  // Set Adaptive triggers (Sunshine protocol extension)
   0x3010,  // Latency trace clock sync request (Apollo protocol extension)
+  0x3030,  // Input round-trip probe (Apollo protocol extension)
 };
 
 namespace asio = boost::asio;
@@ -428,6 +431,12 @@ namespace stream {
     frame_trace::clock_sync_response_t body;
   };
 
+  struct control_input_probe_echo_t {
+    control_header_v2 header;
+
+    input_trace::input_probe_echo_t body;
+  };
+
   struct control_hdr_mode_t {
     control_header_v2 header;
 
@@ -645,6 +654,10 @@ namespace stream {
 
       platf::feedback_queue_t feedback_queue;
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
+
+      /// Echoes produced on the task pool injection thread. They are queued rather than sent
+      /// there because the ENet peer belongs to the control stream thread, which drains this.
+      safe::mail_raw_t::queue_t<input_trace::input_probe_echo_t> input_probe_queue;
     } control;
 
     /// This session started the global frame trace, so its frames are the ones that go
@@ -659,6 +672,10 @@ namespace stream {
     /// gives the broadcast thread a happens-before edge back to the write. session::join()
     /// reads it on the same thread that wrote it.
     bool frame_trace_owner = false;
+
+    /// This session started the global input trace and is the one that flushes it. Same
+    /// single-owner reasoning as `frame_trace_owner`; written once in session::start().
+    bool input_trace_owner = false;
 
     std::uint32_t launch_session_id;
     std::mutex metadata_mutex;
@@ -1368,6 +1385,40 @@ namespace stream {
     return 0;
   }
 
+  /**
+   * @brief Send one input probe echo to the client.
+   * @details Control stream thread only — it owns the ENet peer. The body arrives here from
+   *          the task pool injection thread through `control.input_probe_queue`.
+   * @param session Session to answer.
+   * @param echo Fully populated echo body.
+   * @return 0 on success, -1 if the send failed.
+   */
+  int send_input_probe_echo(session_t *session, const input_trace::input_probe_echo_t &echo) {
+    if (!session->control.peer) {
+      return -1;
+    }
+
+    control_input_probe_echo_t plaintext {};
+    plaintext.header.type = input_trace::INPUT_PROBE_ECHO_PTYPE;
+    plaintext.header.payloadLength = sizeof(plaintext.body);
+    plaintext.body = echo;
+
+    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
+      encrypted_payload;
+
+    auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
+    if (payload.empty()) {
+      return -1;
+    }
+
+    if (session->broadcast_ref->control_server.send(payload, session->control.peer)) {
+      BOOST_LOG(warning) << "Input trace: couldn't send probe echo"sv;
+      return -1;
+    }
+
+    return 0;
+  }
+
   void controlBroadcastThread(control_server_t *server) {
     server->map(packetTypes[IDX_PERIODIC_PING], [](session_t *session, const std::string_view &payload) {
       BOOST_LOG(verbose) << "type [IDX_PERIODIC_PING]"sv;
@@ -1617,6 +1668,42 @@ namespace stream {
       }
     });
 
+    server->map(packetTypes[IDX_INPUT_PROBE], [](session_t *session, const std::string_view &payload) {
+      // Taken before anything else so it is as close to arrival as this thread can get. The
+      // probe is sent immediately before the input packet it marks, and both are handled on
+      // this same control stream thread, so "the next input packet" is exactly wire order.
+      auto host_rx = input_trace::now_us();
+
+      if (!session->config.inputProbe) {
+        BOOST_LOG(debug) << "type [IDX_INPUT_PROBE] dropped, input probe not negotiated"sv;
+        return;
+      }
+
+      // The encrypted dispatch path strips the type and the payload length, the plain one only
+      // strips the type. Accept either framing, same as the clock sync handler.
+      auto body = payload;
+      if (body.size() == sizeof(input_trace::input_probe_t) + sizeof(std::uint16_t)) {
+        body = body.substr(sizeof(std::uint16_t));
+      }
+
+      if (body.size() < sizeof(input_trace::input_probe_t)) {
+        BOOST_LOG(warning) << "Input trace: runt probe ("sv << payload.size() << " bytes)"sv;
+        return;
+      }
+
+      input_trace::input_probe_t probe;
+      std::memcpy(&probe, body.data(), sizeof(probe));
+
+      if (probe.version != input_trace::INPUT_PROBE_VERSION) {
+        BOOST_LOG(warning) << "Input trace: probe version "sv << (int) probe.version
+                           << " but this host speaks "sv << (int) input_trace::INPUT_PROBE_VERSION
+                           << ", dropping"sv;
+        return;
+      }
+
+      input_trace::mark_next_input(probe, host_rx);
+    });
+
     server->map(packetTypes[IDX_ENCRYPTED], [server](session_t *session, const std::string_view &payload) {
       BOOST_LOG(verbose) << "type [IDX_ENCRYPTED]"sv;
 
@@ -1811,6 +1898,16 @@ namespace stream {
               auto hdr_info = hdr_queue->pop();
 
               send_hdr_mode(session, std::move(hdr_info));
+            }
+
+            auto &input_probe_queue = session->control.input_probe_queue;
+            if (input_probe_queue) {
+              while (session->control.peer && input_probe_queue->peek()) {
+                auto echo = input_probe_queue->pop();
+                if (echo) {
+                  send_input_probe_echo(session, *echo);
+                }
+              }
             }
           }
 
@@ -3079,6 +3176,13 @@ namespace stream {
       // Trapping on any of that is a false positive that would kill every other
       // live stream.
 
+      // Same ordering argument as the frame trace. end_session() clears the echo sink before
+      // it writes, so the injection thread cannot raise onto a queue whose session is going
+      // away; any echo already queued is simply never drained, which is harmless.
+      if (session.input_trace_owner) {
+        input_trace::end_session();
+      }
+
       // Reset input on session stop to avoid stuck repeated keys
       BOOST_LOG(debug) << "Resetting Input..."sv;
       input::reset(session.input);
@@ -3235,6 +3339,24 @@ namespace stream {
         }  // else leave it 0: no extension was emitted, so no version applies
 
         session.frame_trace_owner = frame_trace::begin_session(meta);
+      }
+
+      if (session.config.inputProbe) {
+        input_trace::metadata_t input_meta;
+        input_meta.client_name = session.device_name;
+        input_meta.gamepad_type = config::input.gamepad;
+
+        session.input_trace_owner = input_trace::begin_session(input_meta);
+
+        if (session.input_trace_owner) {
+          // The sink runs on the task pool injection thread, so it only raises on the queue.
+          // The control stream thread owns the ENet peer and does the actual send when it
+          // drains. Capturing the queue by value keeps it alive independently of the session.
+          auto queue = session.control.input_probe_queue;
+          input_trace::set_echo_sink([queue](const input_trace::input_probe_echo_t &echo) {
+            queue->raise(echo);
+          });
+        }
       }
 
       session.audioThread = std::thread {audioThread, &session};
@@ -3412,6 +3534,7 @@ namespace stream {
       session->control.connect_data = launch_session.control_connect_data;
       session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);
       session->control.hdr_queue = mail->event<video::hdr_info_t>(mail::hdr);
+      session->control.input_probe_queue = mail->queue<input_trace::input_probe_echo_t>(mail::input_probe_echo);
       session->control.legacy_input_enc_iv = launch_session.iv;
       session->control.cipher = crypto::cipher::gcm_t {
         launch_session.gcm_key,

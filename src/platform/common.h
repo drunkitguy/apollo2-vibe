@@ -279,6 +279,16 @@ namespace platf {
     // trace is enabled. Reserved here so the next platform capability doesn't collide with
     // it. See frame_trace::HOST_FF_LATENCY_TRACE.
     constexpr caps_t reserved_latency_trace = 0x04;
+
+    // 0x08 is SS_FF_TEXT_FOCUS, owned by the text focus hints feature. Reserved here for the
+    // same reason as 0x04 even on branches where that feature is absent, so the bit map stays
+    // consistent across topic branches. See focus_hints::HOST_FF_TEXT_FOCUS.
+    constexpr caps_t reserved_text_focus = 0x08;
+
+    // 0x10 is SS_FF_INPUT_PROBE. Also a host-level stream capability rather than a platform
+    // one, ORed in by src/rtsp.cpp when the input trace is enabled. See
+    // input_trace::HOST_FF_INPUT_PROBE and wire contract §8. Next free bit is 0x20.
+    constexpr caps_t reserved_input_probe = 0x10;
   };  // namespace platform_caps
 
   struct gamepad_state_t {

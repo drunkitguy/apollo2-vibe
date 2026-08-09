@@ -13,6 +13,7 @@ extern "C" {
 #include <bitset>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <list>
 #include <thread>
 #include <unordered_map>
@@ -24,6 +25,7 @@ extern "C" {
 #include "config.h"
 #include "globals.h"
 #include "input.h"
+#include "input_trace.h"
 #include "logging.h"
 #include "mouse_input.h"
 #include "platform/common.h"
@@ -215,7 +217,15 @@ namespace input {
     safe::mail_raw_t::event_t<input::touch_port_t> touch_port_event;
     platf::feedback_queue_t feedback_queue;
 
-    std::list<std::vector<uint8_t>> input_queue;
+    /// A queued input packet and, when the input trace is running, the probe the client sent
+    /// immediately before it. The probe rides with the packet so the injection thread can
+    /// attribute its own timestamps without a second lookup structure.
+    struct queued_input_t {
+      std::vector<uint8_t> data;
+      input_trace::pending_t probe;
+    };
+
+    std::list<queued_input_t> input_queue;
     std::mutex input_queue_lock;
     std::atomic_bool input_queue_task_scheduled;
 
@@ -1668,6 +1678,13 @@ namespace input {
     std::vector<uint8_t> entry;
     PNV_INPUT_HEADER payload;
 
+    // Probes attached to this injection: the popped entry's, plus any carried by entries that
+    // were coalesced into it. Every one of them gets an echo, because the client is waiting on
+    // each sequence number it sent. Empty in the common case where the trace is off.
+    std::vector<input_trace::pending_t> probes;
+    std::uint8_t coalesced_count = 1;
+    const bool tracing = input_trace::enabled();
+
     // Lock the input queue while batching, but release it before sending
     // the input to the OS. This avoids potentially lengthy lock contention
     // in the control stream thread while input is being processed by the OS.
@@ -1681,21 +1698,33 @@ namespace input {
       }
 
       // Pop off the first entry, which we will send
-      entry = input->input_queue.front();
+      entry = std::move(input->input_queue.front().data);
       payload = (PNV_INPUT_HEADER) entry.data();
+      if (tracing && input->input_queue.front().probe.valid) {
+        probes.push_back(input->input_queue.front().probe);
+      }
       input->input_queue.pop_front();
 
       // Try to batch with remaining items on the queue
       auto i = input->input_queue.begin();
       while (i != input->input_queue.end()) {
-        auto batchable_entry = *i;
-        auto batchable_payload = (PNV_INPUT_HEADER) batchable_entry.data();
+        auto batchable_payload = (PNV_INPUT_HEADER) i->data.data();
 
         auto batch_result = batch(payload, batchable_payload);
         if (batch_result == batch_result_e::terminate_batch) {
           // Stop batching
           break;
         } else if (batch_result == batch_result_e::batched) {
+          // This client packet is about to disappear into the one we're injecting. Record
+          // that, so a probe riding on it is still answered and so the count reported to the
+          // client says how much was merged rather than implying a clean per-event sample.
+          if (tracing && i->probe.valid) {
+            probes.push_back(i->probe);
+          }
+          if (coalesced_count < std::numeric_limits<std::uint8_t>::max()) {
+            ++coalesced_count;
+          }
+
           // Erase this entry since it was batched
           i = input->input_queue.erase(i);
         } else {
@@ -1705,8 +1734,14 @@ namespace input {
       }
     }
 
+    // Everything above happened under the queue lock, so this is the instant the event
+    // actually became this thread's to inject.
+    const std::int64_t dispatch_us = probes.empty() ? 0 : input_trace::now_us();
+
     // Print the final input packet
     input::print((void *) payload);
+
+    const std::int64_t inject_call_us = probes.empty() ? 0 : input_trace::now_us();
 
     // Send the batched input to the OS
     switch (util::endian::little(payload->magic)) {
@@ -1754,6 +1789,16 @@ namespace input {
       case SS_CONTROLLER_BATTERY_MAGIC:
         passthrough(input, (PSS_CONTROLLER_BATTERY_PACKET) payload);
         break;
+    }
+
+    // Stamped before the queue is re-examined below, so the recorded dispatch return is the
+    // injection's cost and not the scheduling that follows it.
+    if (!probes.empty()) {
+      const auto inject_return_us = input_trace::now_us();
+      const auto magic = util::endian::little(payload->magic);
+      for (const auto &probe : probes) {
+        input_trace::complete(probe, magic, dispatch_us, inject_call_us, inject_return_us, coalesced_count);
+      }
     }
 
     bool schedule_next = false;
@@ -1840,7 +1885,10 @@ namespace input {
     }
     {
       std::lock_guard<std::mutex> lg(input->input_queue_lock);
-      input->input_queue.push_back(std::move(input_data));
+      // take_pending() is a cheap no-op returning an invalid probe when the trace is off.
+      // This runs on the control stream thread, the same thread the 0x3030 handler runs on,
+      // so the probe this picks up is the one that immediately preceded this packet.
+      input->input_queue.push_back(input_t::queued_input_t {std::move(input_data), input_trace::take_pending()});
       schedule_input_task = !input->input_queue_task_scheduled.exchange(true, std::memory_order_acq_rel);
     }
     if (schedule_input_task) {

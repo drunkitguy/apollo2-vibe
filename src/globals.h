@@ -56,6 +56,9 @@ namespace mail {
   MAIL(gamepad_feedback);
   MAIL(hdr);
   MAIL(dynamic_bitrate);  // Runtime encoder bitrate change (kbps), posted from the HTTP /bitrate handler
+  /// Input probe echoes, raised on the task pool injection thread and drained on the control
+  /// stream thread, which owns the ENet peer. See input_trace.h.
+  MAIL(input_probe_echo);
 #undef MAIL
 
 }  // namespace mail
