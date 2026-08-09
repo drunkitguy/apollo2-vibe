@@ -494,7 +494,19 @@ int main(int argc, char *argv[]) {
 
 #endif
 
-  task_pool.start(1);
+  // This single pool thread injects every input event in the process — mouse, keyboard,
+  // gamepad, key repeat, touch and pen repeat — while the control stream thread that feeds it
+  // runs at `critical` and the capture and encode threads run at `high`. Leaving it at the
+  // default left the last hop of the input path as the lowest-priority link in the chain, and
+  // competing with every ordinary process on the machine.
+  //
+  // `high` rather than `critical` on purpose. Injection is short, bursty work that blocks in
+  // SendInput or ViGEm and then yields, so being level with the video threads is enough to get
+  // it scheduled promptly. Putting it above them would let input preempt encode on a laptop
+  // with shared cores, which is the wrong trade for a streaming host.
+  task_pool.start(1, []() {
+    platf::adjust_thread_priority(platf::thread_priority_e::high);
+  });
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
   // create tray thread and detach it if enabled in config

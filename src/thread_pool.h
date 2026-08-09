@@ -6,6 +6,7 @@
 
 // standard includes
 #include <atomic>
+#include <functional>
 #include <thread>
 
 // local includes
@@ -75,13 +76,25 @@ namespace thread_pool_util {
       return future;
     }
 
-    void start(int threads) {
+    /**
+     * @brief Start the worker threads.
+     * @param threads Number of workers to create.
+     * @param on_thread_start Optional, run once on each worker before it takes any task.
+     *        Lets the owner configure the thread it just created — priority, name, COM
+     *        apartment — without this generic class having to know about any of that.
+     */
+    void start(int threads, std::function<void()> on_thread_start = {}) {
       _continue.store(true, std::memory_order_release);
 
       _thread.resize(threads);
 
       for (auto &t : _thread) {
-        t = std::thread(&ThreadPool::_main, this);
+        t = std::thread([this, on_thread_start]() {
+          if (on_thread_start) {
+            on_thread_start();
+          }
+          _main();
+        });
       }
     }
 
