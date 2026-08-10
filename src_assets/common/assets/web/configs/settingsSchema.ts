@@ -610,6 +610,20 @@ export const settingsCategories: SettingsCategory[] = [
           boolean('always_send_scancodes'),
           boolean('high_resolution_scrolling'),
           boolean('native_pen_touch'),
+          boolean('focus_hints', { platform: 'windows' }),
+          select(
+            'lock_screen_focus_hint',
+            [
+              option('none', 'config.lock_screen_focus_hint_none'),
+              option('numeric', 'config.lock_screen_focus_hint_numeric'),
+              option('text', 'config.lock_screen_focus_hint_text'),
+              option('password', 'config.lock_screen_focus_hint_password'),
+            ],
+            {
+              platform: 'windows',
+              visibleWhen: { key: 'focus_hints', equals: true },
+            },
+          ),
         ],
       },
       {
@@ -880,6 +894,8 @@ export const settingsDefaults: Record<string, unknown> = {
   always_send_scancodes: true,
   high_resolution_scrolling: true,
   native_pen_touch: true,
+  focus_hints: false,
+  lock_screen_focus_hint: 'none',
   key_repeat_delay: 500,
   key_repeat_frequency: 24.9,
   install_steam_audio_drivers: true,

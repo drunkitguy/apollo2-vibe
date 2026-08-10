@@ -221,6 +221,7 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/game_activity.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/game_activity.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/input.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/focus_monitor.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_base.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/nv_truehdr.h"
@@ -291,6 +292,7 @@ list(PREPEND PLATFORM_LIBRARIES
         minhook::minhook
         ntdll
         pdh
+        oleaut32  # VariantInit/VariantClear/SysFreeString, used by the focus monitor
         setupapi
         shlwapi
         shell32

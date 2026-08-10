@@ -418,6 +418,10 @@ sunshine_register_component(NAME test_component_fec_adaptive TEST_SOURCE unit/te
     SUPPORT_SOURCES "${CMAKE_CURRENT_LIST_DIR}/support/fec_adaptive_runtime_stubs.cpp"
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/fec_adaptive.cpp"
     LINK_LIBRARIES Boost::log)
+sunshine_register_component(NAME test_component_focus_hints TEST_SOURCE unit/test_focus_hints.cpp
+    SUPPORT_SOURCES "${CMAKE_CURRENT_LIST_DIR}/support/focus_hints_runtime_stubs.cpp"
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/focus_hints.cpp"
+    LINK_LIBRARIES Boost::log Boost::process)
 sunshine_register_component(NAME test_component_resource_config_catalog TEST_SOURCE unit/test_config_catalog_contract.cpp
     INCLUDE_DIRECTORIES "${SUNSHINE_TEST_GENERATED_INCLUDE_DIR}")
 sunshine_register_component(NAME test_component_resource_locale_catalog TEST_SOURCE integration/test_locale_consistency.cpp

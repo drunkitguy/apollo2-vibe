@@ -59,6 +59,7 @@ namespace mail {
   /// Input probe echoes, raised on the task pool injection thread and drained on the control
   /// stream thread, which owns the ENet peer. See input_trace.h.
   MAIL(input_probe_echo);
+  MAIL(focus_hint);
 #undef MAIL
 
 }  // namespace mail

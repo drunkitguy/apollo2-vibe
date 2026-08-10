@@ -77,6 +77,9 @@ namespace stream {
     /// exactly like `frameTrace`: input probes arriving while this is false are dropped rather
     /// than answered, so a peer that changes its mind mid-session cannot get half a feature.
     bool inputProbe;
+    /// Client advertised ML_FF_TEXT_FOCUS and the host had `focus_hints` enabled when it
+    /// answered DESCRIBE. Fixed for the lifetime of the session.
+    bool focusHints;
 
     std::optional<int> gcmap;
     bool gen1_framegen_fix;

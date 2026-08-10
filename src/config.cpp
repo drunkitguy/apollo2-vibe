@@ -962,6 +962,8 @@ namespace config {
     false,  // frame_trace
     36000,  // frame_trace_capacity (5 minutes at 120 fps)
     "frame_trace.csv"s,  // frame_trace_path
+    false,  // focus_hints
+    focus_hints::kind_t::none,  // lock_screen_focus_hint
   };
 
   audio_t audio {
@@ -1972,6 +1974,16 @@ namespace config {
 
     string_f(vars, "fallback_mode", video.fallback_mode);
     bool_f(vars, "ignore_encoder_probe_failure", video.ignore_encoder_probe_failure);
+    bool_f(vars, "focus_hints", video.focus_hints);
+    {
+      // Declared rather than detected: Windows does not expose which sign-in method the
+      // lock screen is showing. See docs/configuration.md.
+      std::string lock_hint;
+      string_f(vars, "lock_screen_focus_hint", lock_hint);
+      if (!lock_hint.empty()) {
+        video.lock_screen_focus_hint = focus_hints::kind_from_view(lock_hint);
+      }
+    }
 
     // Windows-only frame limiter options
     bool_f(vars, "frame_limiter_enable", frame_limiter.enable);

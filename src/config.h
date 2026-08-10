@@ -17,6 +17,7 @@
 #include <vector>
 
 // local includes
+#include "focus_hints.h"
 #include "nvenc/nvenc_config.h"
 
 namespace config {
@@ -255,6 +256,13 @@ namespace config {
     bool frame_trace;  ///< Record per-frame host latency timestamps, off by default.
     int frame_trace_capacity;  ///< Number of frames held in the in-memory ring buffer.
     std::string frame_trace_path;  ///< CSV written once at session end, timestamped per run.
+    bool focus_hints;  ///< Tell the client when a text field is focused, off by default.
+
+    /// What to report while input is on a desktop this process cannot observe — the lock
+    /// screen, a UAC prompt, Ctrl-Alt-Del. Windows does not expose which sign-in method is
+    /// showing, so this is declared rather than detected. `none` by default: a keyboard the
+    /// user did not ask for is worse than no keyboard.
+    focus_hints::kind_t lock_screen_focus_hint;
   };
 
   struct audio_t {

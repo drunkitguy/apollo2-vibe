@@ -81,6 +81,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/entry_metadata.h"
         "${CMAKE_SOURCE_DIR}/src/fec_adaptive.cpp"
         "${CMAKE_SOURCE_DIR}/src/fec_adaptive.h"
+        "${CMAKE_SOURCE_DIR}/src/focus_hints.cpp"
+        "${CMAKE_SOURCE_DIR}/src/focus_hints.h"
         "${CMAKE_SOURCE_DIR}/src/file_handler.cpp"
         "${CMAKE_SOURCE_DIR}/src/file_handler_core.cpp"
         "${CMAKE_SOURCE_DIR}/src/file_handler.h"

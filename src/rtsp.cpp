@@ -32,6 +32,7 @@ extern "C" {
 
 // local includes
 #include "config.h"
+#include "focus_hints.h"
 #include "frame_trace.h"
 #include "input_trace.h"
 #include "globals.h"
@@ -1427,6 +1428,9 @@ namespace rtsp_stream {
     if (config::input.input_trace) {
       feature_flags |= input_trace::HOST_FF_INPUT_PROBE;
     }
+    if (config::video.focus_hints) {
+      feature_flags |= focus_hints::HOST_FF_TEXT_FOCUS;
+    }
     ss << "a=x-ss-general.featureFlags:" << feature_flags << std::endl;
 
     if (config::video.frame_trace) {
@@ -1709,6 +1713,11 @@ namespace rtsp_stream {
       // Same both-halves-must-agree rule as the frame trace, and deliberately independent of
       // it: a client may want input probes without the video trace or the other way round.
       config.inputProbe = config::input.input_trace && (config.mlFeatureFlags & input_trace::CLIENT_FF_INPUT_PROBE) != 0;
+
+      // Focus hints only flow when both halves agree, so an unpatched peer on either side
+      // sees exactly the traffic it sees today.
+      config.focusHints = config::video.focus_hints &&
+                          (config.mlFeatureFlags & focus_hints::CLIENT_FF_TEXT_FOCUS) != 0;
 
       if (config::video.limit_framerate) {
         config.monitor.encodingFramerate = session->fps;
