@@ -643,6 +643,7 @@ export const settingsCategories: SettingsCategory[] = [
         fields: [
           select('encoder', [option('', '_common.auto')]),
           nvencPresetField(),
+          boolean('nvenc_intra_refresh', { encoderFamily: 'nvidia' }),
           boolean('wgc_pacing_smoothing'),
         ],
       },
@@ -886,6 +887,7 @@ export const settingsDefaults: Record<string, unknown> = {
   virtual_sink: '',
   encoder: '',
   nvenc_preset: 1,
+  nvenc_intra_refresh: false,
   qsv_preset: 'medium',
   amd_quality: 'balanced',
   wgc_pacing_smoothing: true,
