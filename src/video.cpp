@@ -2108,7 +2108,18 @@ namespace video {
       // 'keyint=-1' in the parameters ourselves.
       {
         {"forced-idr"s, 1},
-        {"x265-params"s, "info=0:keyint=-1"s},
+        {"x265-params"s, [](const config_t &) {
+           // x265 has no AVOption for the chroma QP offsets, they go through the parameter
+           // string. Both must be emitted together: x265 applies a +6 default to both
+           // planes only while both parameters are absent, so setting just one drops the
+           // other from +6 to 0 as a side effect.
+           auto params = "info=0:keyint=-1"s;
+           if (config::video.cb_qp_offset != 0 || config::video.cr_qp_offset != 0) {
+             params += ":cbqpoffs="s + std::to_string(config::video.cb_qp_offset);
+             params += ":crqpoffs="s + std::to_string(config::video.cr_qp_offset);
+           }
+           return params;
+         }},
         {"preset"s, &config::video.sw.sw_preset},
         {"tune"s, &config::video.sw.sw_tune},
       },
@@ -6440,6 +6451,19 @@ namespace video {
       BOOST_LOG(error) << "If this system has an AMD GPU, hardware encoding is NOT active. Check the AMD driver and AMF runtime, or set encoder = amdvce_legacy to try the FFmpeg AMF fallback."sv;
     }
 #endif
+
+    if (config::video.cb_qp_offset != 0 || config::video.cr_qp_offset != 0) {
+      // Only the standalone NVENC encoder and libx265 can reach the PPS chroma QP offsets.
+      // Reported once here, against the encoder that was actually chosen, rather than from
+      // the encode session path where it would repeat for every probe of every candidate.
+      if (dynamic_cast<const encoder_platform_formats_nvenc *>(encoder.platform_formats.get())) {
+        BOOST_LOG(info) << "Chroma QP offsets apply to H.264 and HEVC on ["sv << encoder.name << "], not to AV1"sv;
+      } else if (encoder.hevc.name == "libx265"sv) {
+        BOOST_LOG(info) << "Chroma QP offsets apply to HEVC on [libx265] only, no other codec on ["sv << encoder.name << "] can set them"sv;
+      } else {
+        BOOST_LOG(warning) << "Chroma QP offsets are configured, but ["sv << encoder.name << "] exposes no way to set them and will ignore them"sv;
+      }
+    }
 
     last_encoder_probe_supported_ref_frames_invalidation = (encoder.flags & REF_FRAMES_INVALIDATION);
     last_encoder_probe_supported_yuv444_for_codec[0] = encoder.h264[encoder_t::PASSED] &&

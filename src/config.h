@@ -61,6 +61,13 @@ namespace config {
     // ffmpeg params
     int qp;  // higher == more compression and less quality
 
+    // Chroma QP offsets applied on top of the luma QP chosen by rate control.
+    // Negative values allocate more of the bit budget to chroma. Range -12 to 12.
+    // 0 leaves the encoder's own default in place rather than writing a 0, and the
+    // encoder defaults are not 0, so the two cases are not continuous.
+    int cb_qp_offset;
+    int cr_qp_offset;
+
     int hevc_mode;
     int av1_mode;
 

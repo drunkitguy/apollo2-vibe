@@ -2436,6 +2436,85 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### cb_qp_offset
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Offset applied to the quantization parameter of the Cb (blue difference) chroma plane, relative to the
+            luma QP chosen by rate control. This is <code>chroma_qp_index_offset</code> in H.264 and
+            <code>pps_cb_qp_offset</code> in HEVC. Negative values allocate proportionally more of the bit budget
+            to chroma, positive values less. It applies to 4:2:0 as well as 4:4:4.
+            @note{The effect of any particular value on image quality has not been measured. -2 is a documented
+            starting point for a tuning sweep, not a recommendation.}
+            @warning{0 means "leave the encoder's own default alone"; any other value replaces it outright. The
+            two are not continuous, because the encoder defaults are not 0. On libx265 the default is +6 on both
+            planes, so `cb_qp_offset = -1` moves Cb by 7 steps, not 1. Setting either offset to a non-zero value
+            also replaces the default on the <em>other</em> plane — Apollo therefore always writes both, so
+            `cb_qp_offset = -2` with `cr_qp_offset = 0` gives a bitstream offset of exactly -2 and 0.}
+            @note{Only the standalone NVENC encoder and libx265 can apply this. Every other encoder ignores it
+            and logs a warning at session start: no ffmpeg encoder wrapper exposes an equivalent AVOption
+            (verified against ffmpeg 8.1.2), and libx264's <code>chromaoffset</code> is a relative adjustment to
+            a baseline that itself varies with the selected preset and tune (measured: +6 at Apollo's default
+            `superfast`/`zerolatency`, +4 at `medium`, 0 at `tune=psnr`), so it cannot express this setting.
+            NVENC also ignores it for AV1, where the same driver fields carry the unrelated AV1 delta Q values.}
+            @note{The NVENC fields backing this were added in Video Codec SDK 12.0. Drivers predating it will
+            silently ignore the setting.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">@code{}
+            -12 to 12
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            cb_qp_offset = -2
+            @endcode</td>
+    </tr>
+</table>
+
+### cr_qp_offset
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Same as `cb_qp_offset`, but for the Cr (red difference) chroma plane. This is
+            <code>second_chroma_qp_index_offset</code> in H.264 and <code>pps_cr_qp_offset</code> in HEVC.
+            @note{Setting either offset to a non-zero value takes both planes off the encoder default, so treat
+            them as a pair. See the warning under `cb_qp_offset`.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">@code{}
+            -12 to 12
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            cr_qp_offset = -2
+            @endcode</td>
+    </tr>
+</table>
+
 ### min_threads
 
 <table>

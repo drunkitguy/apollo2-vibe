@@ -63,6 +63,13 @@ namespace nvenc {
 
     // Intra refresh for clients that doesn't request keyframe correctly
     bool intra_refresh = false;
+
+    // Chroma QP offset for the Cb plane, 'chroma_qp_index_offset' in H.264 and 'pps_cb_qp_offset' in HEVC.
+    // Negative values allocate more of the bit budget to chroma, range is -12 to 12
+    int cb_qp_offset = 0;
+
+    // Chroma QP offset for the Cr plane, 'second_chroma_qp_index_offset' in H.264 and 'pps_cr_qp_offset' in HEVC
+    int cr_qp_offset = 0;
   };
 
 }  // namespace nvenc
