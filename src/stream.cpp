@@ -61,6 +61,7 @@ extern "C" {
   #include "platform/windows/display.h"
   #include "platform/windows/ipc/misc_utils.h"
   #include "platform/windows/misc.h"
+  #include "platform/windows/text_field_watcher.h"
   #include "platform/windows/virtual_display.h"
   #include "platform/windows/virtual_display_cleanup.h"
 #endif
@@ -83,6 +84,7 @@ extern "C" {
 #define IDX_SET_CLIPBOARD 16
 #define IDX_FILE_TRANSFER_NONCE_REQUEST 17
 #define IDX_SET_ADAPTIVE_TRIGGERS 18
+#define IDX_SET_TEXT_FIELD_FOCUS 19
 
 static const short packetTypes[] = {
   0x0305,  // Start A
@@ -104,6 +106,7 @@ static const short packetTypes[] = {
   0x3001,  // Set Clipboard (Apollo protocol extension)
   0x3002,  // File transfer nonce request (Apollo protocol extension)
   0x5503,  // Set Adaptive triggers (Sunshine protocol extension)
+  0x3003,  // Set Text Field Focus (Apollo protocol extension)
 };
 
 namespace asio = boost::asio;
@@ -411,6 +414,33 @@ namespace stream {
     SS_HDR_METADATA metadata;
   };
 
+  /**
+   * @brief Payload of the Apollo "Set Text Field Focus" control packet (0x3003).
+   *
+   * Little endian, 12 bytes on the wire including the 4-byte header. The client parses
+   * version/field_kind/flags/reserved/input_scope in that order starting at the end of
+   * the header. version is bumped only when the meaning of an existing field changes; a
+   * client that does not recognise the version ignores the packet.
+   *
+   * field_kind and flags mirror the ML_TEXT_FIELD_* / ML_TEXT_FIELD_FLAG_* defines in
+   * moonlight-common-c's Limelight.h and platf::text_field::kind_e.
+   */
+  struct control_text_field_t {
+    control_header_v2 header;
+
+    std::uint8_t version;  // Payload revision; 1 in this implementation
+    std::uint8_t field_kind;  // 0 none, 1 text, 2 numeric, 3 password
+    std::uint8_t flags;  // bit0 read-only, bit1 multiline, bit2 classified by UI Automation,
+                         // bit3 low-confidence keyword guess, bit4 numeric evidence present
+    std::uint8_t reserved;  // Must be 0
+    std::uint32_t input_scope;  // Little endian; 0 = unknown. Reserved for a future TSF implementation.
+  };
+
+  static_assert(
+    sizeof(control_text_field_t) == 12,
+    "0x3003 payload must be 12 bytes"
+  );
+
   typedef struct control_encrypted_t {
     std::uint16_t encryptedHeaderType;  // Always LE 0x0001
     std::uint16_t length;  // sizeof(seq) + 16 byte tag + secondary header and data
@@ -619,6 +649,12 @@ namespace stream {
 
       platf::feedback_queue_t feedback_queue;
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
+
+      // Text field focus state (Apollo 0x3003). primed goes true once this peer has been
+      // told anything at all, which is what lets the client tell a host that speaks the
+      // extension from one that does not.
+      std::uint64_t text_field_generation {0};
+      bool text_field_primed {false};
     } control;
 
     std::uint32_t launch_session_id;
@@ -1329,6 +1365,46 @@ namespace stream {
     return 0;
   }
 
+  /**
+   * @brief Send the Apollo "Set Text Field Focus" packet (0x3003) to one peer.
+   *
+   * Defined unconditionally so the control stream still builds on platforms that have no
+   * focus watcher; only the caller is Windows-only.
+   */
+  int send_text_field_state(session_t *session, std::uint8_t kind, std::uint8_t flags, std::uint32_t input_scope) {
+    // Unlike send_hdr_mode there is no "still waiting for PING" case to warn about: the
+    // only caller runs inside the branch where the peer is already connected, so a warning
+    // here could never fire and would only be misleading if it somehow did. Kept as a
+    // silent contract guard for any future caller.
+    if (!session->control.peer) {
+      return -1;
+    }
+
+    control_text_field_t plaintext {};
+    plaintext.header.type = packetTypes[IDX_SET_TEXT_FIELD_FOCUS];
+    plaintext.header.payloadLength = sizeof(control_text_field_t) - sizeof(control_header_v2);
+
+    plaintext.version = 1;
+    plaintext.field_kind = kind;
+    plaintext.flags = flags;
+    plaintext.reserved = 0;
+    plaintext.input_scope = util::endian::little(input_scope);
+
+    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
+      encrypted_payload;
+
+    auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
+    if (session->broadcast_ref->control_server.send(payload, session->control.peer)) {
+      TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session->control.peer->address.address));
+      BOOST_LOG(warning) << "Couldn't send text field focus to ["sv << addr << ':' << port << ']';
+
+      return -1;
+    }
+
+    BOOST_LOG(debug) << "Sent text field focus: kind="sv << (unsigned) kind << " flags="sv << (unsigned) flags;
+    return 0;
+  }
+
   void controlBroadcastThread(control_server_t *server) {
     server->map(packetTypes[IDX_PERIODIC_PING], [](session_t *session, const std::string_view &payload) {
       BOOST_LOG(verbose) << "type [IDX_PERIODIC_PING]"sv;
@@ -1720,6 +1796,28 @@ namespace stream {
 
               send_hdr_mode(session, std::move(hdr_info));
             }
+
+#ifdef _WIN32
+            // Text field focus (Apollo 0x3003). Every newly connected peer gets one
+            // packet immediately - normally "no field" - so the client can tell that this
+            // host speaks the extension before the user can interact with anything.
+            if (session->control.peer && config::input.text_field_detection && platf::text_field::running()) {
+              const auto text_field = platf::text_field::current();
+              if (!session->control.text_field_primed ||
+                  session->control.text_field_generation != text_field.generation) {
+                const auto sent = send_text_field_state(
+                  session,
+                  static_cast<std::uint8_t>(text_field.kind),
+                  text_field.flags,
+                  text_field.input_scope
+                );
+                if (sent == 0) {
+                  session->control.text_field_generation = text_field.generation;
+                  session->control.text_field_primed = true;
+                }
+              }
+            }
+#endif
           }
 
           ++pos;
@@ -2983,6 +3081,8 @@ namespace stream {
         }
 
 #ifdef _WIN32
+        // Safe when the watcher was never started.
+        platf::text_field::stop();
         clear_deferred_stream_start_actions();
         const session::shared_runtime_finalize_context_t finalize_context {
           .ignore_current_rtsp_teardown = true,
@@ -3106,6 +3206,13 @@ namespace stream {
         }
         webrtc_stream::set_rtsp_sessions_active(true);
 #ifdef _WIN32
+        // Start the host focus watcher with the stream rather than at boot, so the UI
+        // Automation client only exists while at least one stream is live. start() is
+        // idempotent.
+        if (config::input.text_field_detection) {
+          platf::text_field::start();
+        }
+
         if (!session.config.monitor.input_only) {
           // Apply RTSS frame limit if enabled (Windows-only)
           std::optional<int> lossless_rtss_limit;
