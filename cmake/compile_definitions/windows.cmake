@@ -216,6 +216,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/game_activity_policy.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/foreground_app.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/foreground_app.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/text_field_watcher.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/text_field_watcher.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/fullscreen_detector.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/fullscreen_detector.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/game_activity.h"
@@ -290,6 +292,11 @@ list(PREPEND PLATFORM_LIBRARIES
         libwinpthread.a
         minhook::minhook
         ntdll
+        # ole32 is currently only pulled in transitively through FFMPEG_PLATFORM_LIBRARIES
+        # (cmake/dependencies/ffmpeg.cmake). text_field_watcher.cpp calls CoCreateInstance
+        # directly, so make the dependency explicit.
+        ole32
+        oleaut32
         pdh
         setupapi
         shlwapi
@@ -297,6 +304,7 @@ list(PREPEND PLATFORM_LIBRARIES
         crypt32
         taskschd
         synchronization.lib
+        uiautomationcore
         Windowscodecs
         userenv
         ws2_32

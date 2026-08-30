@@ -144,6 +144,13 @@ const platform = computed(() =>
       class="mb-3"
     />
 
+    <ConfigFieldRenderer
+      v-if="platform === 'windows'"
+      setting-key="text_field_detection"
+      v-model="config.text_field_detection"
+      class="mb-3"
+    />
+
     <hr />
 
     <ConfigFieldRenderer

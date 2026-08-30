@@ -322,6 +322,14 @@ namespace config {
 
     bool enable_input_only_mode;
     bool forward_rumble;
+
+    // Windows only. Watches host keyboard focus with UI Automation and tells the client
+    // which kind of text field, if any, is focused so it can raise its soft keyboard.
+    //
+    // APPEND NEW MEMBERS AT THE END OF THIS STRUCT. config.cpp aggregate-initialises
+    // input_t POSITIONALLY, so inserting a member in the middle silently shifts every
+    // default after it and -Wmissing-field-initializers will not catch it.
+    bool text_field_detection;
   };
 
   struct frame_limiter_t {
