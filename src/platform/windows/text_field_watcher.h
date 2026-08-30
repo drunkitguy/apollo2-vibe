@@ -37,7 +37,11 @@ namespace platf::text_field {
    */
   inline constexpr std::uint8_t flag_read_only = 0x01;  ///< The field rejects input
   inline constexpr std::uint8_t flag_multiline = 0x02;  ///< The field accepts multiple lines
-  inline constexpr std::uint8_t flag_source_uia = 0x04;  ///< Classified from UI Automation rather than Win32 styles
+  /// The FINAL verdict came from a UI Automation rule (R4-R6), not from Win32 window
+  /// styles. A classic EDIT window whose style bits were only provisional and which was
+  /// then confirmed by a UI Automation rule carries this flag: the Win32 read contributed
+  /// the read-only and multiline bits, but it did not decide the kind.
+  inline constexpr std::uint8_t flag_source_uia = 0x04;
   inline constexpr std::uint8_t flag_low_confidence = 0x08;  ///< The verdict came from the label keyword tier
   inline constexpr std::uint8_t flag_numeric = 0x10;  ///< Numeric evidence was found; load-bearing when kind is password
 

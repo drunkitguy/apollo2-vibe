@@ -29,7 +29,16 @@
  *     applied, because without them a call into a hung provider is unbounded;
  *   - can only ever upgrade a verdict, never downgrade it and never produce "no field".
  * That is the whole reason the focus cache request may use AutomationElementMode_Full: the
- * live reference it implies is held for at most one 50 ms tick, one at a time.
+ * live reference it implies is held for one refinement pass, one at a time.
+ *
+ * WORST-CASE COST OF ONE REFINEMENT PASS, stated honestly: F1 can spend 8 x 50 ms of
+ * SendMessageTimeout budget and F2 three hops against the 1000 ms transaction timeout, so a
+ * pathological tick is ~3.4 s, not the ~1 s a single UI Automation call would suggest. That
+ * is a tick of the WORKER, so it delays the next publish and the Win32 safety poll by that
+ * much and nothing else: the event callback, the control stream and the video pipeline are
+ * all on other threads and never wait on it. Reaching it needs a focused field whose
+ * application has stopped pumping messages AND whose UI Automation provider has stopped
+ * answering, at which point the user's problem is not the keyboard layout.
  */
 
 #include "text_field_watcher.h"
@@ -157,6 +166,7 @@ namespace platf::text_field {
       bool is_win32_edit {false};  ///< hwnd passed the classic EDIT class gate
       const char *rule {"R0-null"};  ///< Which ordered rule produced the verdict
       std::string diag;  ///< Provider identity, for the debug log only
+      std::string refine_note;  ///< What the refinement pass did and how far it got
 
       bool operator==(const candidate_t &other) const {
         return kind == other.kind && flags == other.flags && hwnd == other.hwnd &&
@@ -530,24 +540,35 @@ namespace platf::text_field {
       return false;
     }
 
-    // Word lists from PLAN3 section 5, verbatim. Two entries look like mistakes and are
-    // not: "code" is in VETO because a promo/country/auth code is text at least as often as
-    // it is a numeric OTP (the "otp" and "pin" entries carry that case), and "cvvcode" is
-    // in VETO for the same reason its tokens already are.
+    // Word lists from PLAN3 section 5. Two entries look like mistakes and are not: "code" is
+    // in VETO because a promo/country/auth code is text at least as often as it is a numeric
+    // OTP (the "otp" and "pin" entries carry that case), and "cvvcode" is in VETO for the
+    // same reason its tokens already are.
+    //
+    // DROPPED from PLAN3's list: "phone", "telephone", "tel" and "mobile". They are numeric
+    // in the everyday sense and wrong in the only sense that matters here, because the
+    // layout this tier asks for is TYPE_CLASS_NUMBER, which on Android has no '+', '(' or
+    // ')' key. An international number is then untypeable - the exact asymmetric harm
+    // PLAN3 section 5 scores against - whereas a phone field left on QWERTY is merely
+    // annoying. Restoring them needs a phone-shaped keyboard kind on the wire and a
+    // TYPE_CLASS_PHONE mode on the client first; that is future work, not a word list edit.
     const wchar_t *const HINT_NUMERIC[] = {
       L"port", L"pin", L"cvv", L"cvc", L"otp", L"zip", L"zipcode", L"postcode", L"postal",
-      L"quantity", L"qty", L"amount", L"price", L"cost", L"total", L"phone", L"telephone", L"tel",
-      L"mobile", L"fax", L"age", L"year", L"month", L"day", L"hour", L"hours", L"minute", L"minutes",
+      L"quantity", L"qty", L"amount", L"price", L"cost", L"total",
+      L"fax", L"age", L"year", L"month", L"day", L"hour", L"hours", L"minute", L"minutes",
       L"second", L"seconds", L"percent", L"percentage", L"width", L"height", L"fps", L"bitrate",
       L"volume", L"timeout", L"delay", L"offset", L"threshold"
     };
 
+    // ADDED to PLAN3's list: "line". "Second Line" - the second line of a postal address -
+    // tokenises to {second, line}, and "second" is a NUMERIC word, so without this veto an
+    // address field gets a number pad.
     const wchar_t *const HINT_VETO[] = {
       L"name", L"firstname", L"lastname", L"surname", L"email", L"mail", L"address", L"street",
       L"city", L"country", L"search", L"query", L"filter", L"password", L"passphrase", L"url",
-      L"uri", L"link", L"user", L"username", L"login", L"account", L"comment", L"message", L"note",
-      L"notes", L"description", L"title", L"subject", L"text", L"code", L"key", L"token", L"path",
-      L"file", L"filename", L"folder", L"tag", L"tags", L"label", L"cvvcode"
+      L"uri", L"link", L"line", L"user", L"username", L"login", L"account", L"comment", L"message",
+      L"note", L"notes", L"description", L"title", L"subject", L"text", L"code", L"key", L"token",
+      L"path", L"file", L"filename", L"folder", L"tag", L"tags", L"label", L"cvvcode"
     };
 
     // A masked field is only ever annotated as numeric on the four labels that are numeric
@@ -807,6 +828,20 @@ namespace platf::text_field {
       return result;
     }
 
+    /**
+     * @brief Outcome of one ancestor walk, including why it stopped.
+     *
+     * `stop` is a short literal that goes on the wire-change log line. Without it a "wrong
+     * keyboard" report cannot distinguish "walked three hops and found no spinner" from
+     * "could not navigate past the first hop", which is exactly the failure that hid an
+     * ancestor-cache-mode bug through a whole review round.
+     */
+    struct ancestor_walk_t {
+      const char *stop {"not-run"};  ///< not-run | no-timeouts | no-walker | nav-end | early-out | cap | found
+      int hops {0};  ///< how many ancestors were actually reached
+      bool numeric {false};
+    };
+
     struct updown_probe_t {
       HWND target {nullptr};
       bool found {false};
@@ -876,7 +911,8 @@ namespace platf::text_field {
     }
 
     /**
-     * @brief PLAN3 F2. Whether the focused element sits inside a spinner.
+     * @brief PLAN3 F2. Whether the focused element sits inside a spinner, and how the
+     *        walk that looked ended.
      *
      * THE ONLY LIVE UI AUTOMATION CALL IN THIS FILE, and the reason the focus cache request
      * uses AutomationElementMode_Full. UI Automation cannot cache ancestors
@@ -898,25 +934,43 @@ namespace platf::text_field {
      * The CONTROL view, not the raw view: the control view skips the presentational grids a
      * XAML template puts between a NumberBox and its InputBox, which is what keeps the real
      * container inside three hops.
+     *
+     * THE ANCESTOR CACHE REQUEST MUST BE AutomationElementMode_Full, not _None. Each hop
+     * navigates FROM the element the previous hop returned, and an element built _None
+     * "has no reference to the underlying UI": it can be read from the cache but it cannot
+     * be navigated from. With _None the walk silently truncates to a single hop - hop 0
+     * succeeds because it starts at the _Full focus element, hop 1 fails - which reaches a
+     * WinForms NumericUpDown but never an Avalonia or WPF-toolkit up/down, whose inner
+     * TextBox is two hops below its NumericUpDown. This is a deliberate deviation from
+     * PLAN3 section 8.1 (and from its section 11 check 16, which codified the same error).
      */
-    bool ancestor_is_numeric(IUIAutomationElement *element) {
+    ancestor_walk_t walk_ancestors(IUIAutomationElement *element) {
+      ancestor_walk_t walk;
       if (!element || !g_control_walker || !g_ancestor_cache) {
-        return false;
+        walk.stop = "no-walker";
+        return walk;
       }
 
-      // Owns the ancestor of the moment; `element` itself stays the caller's.
+      // Owns the ancestor of the moment; `element` itself stays the caller's. Each hop
+      // releases the one before it, so at most ONE ancestor is live at a time alongside the
+      // focused element - the same envelope the single-slot pending holder gives the focus
+      // element itself.
       element_ref_t node;
       IUIAutomationElement *current = element;
-      bool numeric = false;
+      walk.stop = "cap";
 
       for (int hop = 0; hop < MAX_ANCESTOR_HOPS; ++hop) {
         IUIAutomationElement *parent = nullptr;
         const HRESULT hr = g_control_walker->GetParentElementBuildCache(current, g_ancestor_cache, &parent);
         if (FAILED(hr) || !parent) {
+          // Either the walk reached the top of the tree or the provider refused/timed out.
+          // Both are "no evidence"; the rule id in the log says which hop it happened on.
+          walk.stop = "nav-end";
           break;
         }
         node.reset(parent);  // releases the previous hop
         current = parent;
+        walk.hops = hop + 1;
 
         CONTROLTYPEID control_type = 0;
         if (FAILED(current->get_CachedControlType(&control_type))) {
@@ -925,7 +979,8 @@ namespace platf::text_field {
         if (control_type == UIA_SpinnerControlTypeId ||
             cached_aria_role(current) == L"spinbutton" ||
             class_name_segment_is_numeric(cached_string(current, UIA_ClassNamePropertyId))) {
-          numeric = true;
+          walk.numeric = true;
+          walk.stop = "found";
           break;
         }
 
@@ -936,11 +991,12 @@ namespace platf::text_field {
         if (hop >= 1 &&
             (control_type == UIA_WindowControlTypeId || control_type == UIA_PaneControlTypeId ||
              control_type == UIA_DocumentControlTypeId)) {
+          walk.stop = "early-out";
           break;
         }
       }
 
-      return numeric;
+      return walk;
     }
 
     /**
@@ -1028,8 +1084,10 @@ namespace platf::text_field {
       const char *rule = nullptr;
 
       // F1. Classic up-down buddy. Only for a real, single-line EDIT window.
-      if (snapshot.is_win32_edit && snapshot.hwnd && !(snapshot.flags & flag_multiline) &&
-          find_updown_buddy(snapshot.hwnd)) {
+      const bool f1_eligible =
+        snapshot.is_win32_edit && snapshot.hwnd && !(snapshot.flags & flag_multiline);
+      const bool f1_hit = f1_eligible && find_updown_buddy(snapshot.hwnd);
+      if (f1_hit) {
         numeric = true;
         rule = "F1-updown-buddy";
       }
@@ -1037,26 +1095,52 @@ namespace platf::text_field {
       // F2. Ancestor spinner. SKIPPED ENTIRELY without IUIAutomation2's timeouts: an
       //     unbounded blocking call into a hung provider is not an acceptable trade for a
       //     keyboard layout, so that configuration simply keeps the provisional verdict.
-      if (!numeric && g_have_timeouts.load(std::memory_order_acquire) && ancestor_is_numeric(element.get())) {
-        numeric = true;
-        rule = "F2-ancestor";
+      ancestor_walk_t walk;
+      if (!numeric) {
+        if (!g_have_timeouts.load(std::memory_order_acquire)) {
+          walk.stop = "no-timeouts";
+        } else {
+          walk = walk_ancestors(element.get());
+          if (walk.numeric) {
+            numeric = true;
+            rule = "F2-ancestor";
+          }
+        }
+      } else {
+        walk.stop = "skipped";
       }
 
       // F3. Keyword tier, off unless the operator enabled it.
-      if (!numeric && g_numeric_hints.load(std::memory_order_acquire) && hint_is_numeric(element.get(), snapshot)) {
+      const bool hints_on = g_numeric_hints.load(std::memory_order_acquire);
+      if (!numeric && hints_on && hint_is_numeric(element.get(), snapshot)) {
         numeric = true;
         low_confidence = true;
         rule = "F3-hint";
       }
 
-      if (!numeric) {
-        return;
-      }
+      // Recorded whether or not anything was found: "walked three hops and found no
+      // spinner" and "could not navigate past the first hop" must be distinguishable in a
+      // field bug report, and they are otherwise identical from the outside.
+      std::string note = "f1=";
+      note += f1_eligible ? (f1_hit ? "hit" : "miss") : "n/a";
+      note += " f2=";
+      note += walk.stop;
+      note += "/";
+      note += std::to_string(walk.hops);
+      note += " f3=";
+      note += hints_on ? (low_confidence ? "hit" : "miss") : "off";
 
       {
         std::lock_guard lg {g_state_mutex};
         // F5. Supersession: a newer focus event has already replaced what we refined.
         if (g_candidate_seq != seq) {
+          return;
+        }
+        // The note is not part of operator==, so recording it neither restarts the debounce
+        // nor burns a packet; it just rides along on the next publish of this candidate.
+        g_candidate.refine_note = std::move(note);
+
+        if (!numeric) {
           return;
         }
         // Belt and braces behind the sequence check: refinement never resurrects a field.
@@ -1199,7 +1283,7 @@ namespace platf::text_field {
       // GetParentElementBuildCache impossible - and the ancestor is where the numeric truth
       // lives for every framework that puts focus on an inner text box. The safety that
       // _None bought is reconstructed around the walk itself: see refine_candidate() and
-      // ancestor_is_numeric(). Property reads stay cached either way.
+      // walk_ancestors(). Property reads stay cached either way.
       cache->put_AutomationElementMode(AutomationElementMode_Full);
       cache->put_TreeScope(TreeScope_Element);
       return cache;
@@ -1208,8 +1292,21 @@ namespace platf::text_field {
     /**
      * @brief Build the cache request used for each hop of the ancestor walk.
      *
-     * AutomationElementMode_None here, and only here: an ancestor is read once and dropped,
-     * so it never needs a live reference of its own.
+     * AutomationElementMode_Full, NOT _None, and this is load-bearing rather than
+     * defensive. Hop N+1 calls GetParentElementBuildCache on the element hop N returned, and
+     * an element built _None "has no reference to the underlying UI": it serves cached
+     * property reads and nothing else, tree navigation included. Requesting _None here
+     * would make the walk stop after one hop, silently, with a plain failure HRESULT
+     * indistinguishable from "this element has no parent" - reaching a WinForms
+     * NumericUpDown (one hop) but never an Avalonia or WPF-toolkit up/down (two).
+     *
+     * The safety envelope is unchanged in kind: element_ref_t releases each hop as the next
+     * is taken, so at most one live ancestor exists alongside the focused element, the walk
+     * is still capped at three hops, still worker-thread-only, and still gated on the
+     * IUIAutomation2 timeouts that bound each call.
+     *
+     * DELIBERATE DEVIATION from PLAN3 section 8.1 and its section 11 check 16, both of
+     * which specify _None here.
      */
     IUIAutomationCacheRequest *make_ancestor_cache_request(IUIAutomation *automation) {
       IUIAutomationCacheRequest *cache = nullptr;
@@ -1217,14 +1314,14 @@ namespace platf::text_field {
         return nullptr;
       }
 
+      // PLAN3 section 8.1 also lists UIA_IsRangeValuePatternAvailablePropertyId here. It is
+      // deliberately absent: nothing reads it, and it must not become a trigger on its own
+      // because Slider, ScrollBar, Meter and ProgressBar all expose RangeValue too, so an
+      // ancestor that merely has the pattern is not evidence that this field is numeric.
       static const PROPERTYID properties[] = {
         UIA_ControlTypePropertyId,
         UIA_ClassNamePropertyId,
         UIA_AriaRolePropertyId,
-        // Cached because the design calls for it, and deliberately NOT used as a trigger on
-        // its own: Slider, ScrollBar, Meter and ProgressBar all expose RangeValue too, so an
-        // ancestor that merely has the pattern is not evidence that this field is numeric.
-        UIA_IsRangeValuePatternAvailablePropertyId,
       };
       for (const auto property : properties) {
         if (FAILED(cache->AddProperty(property))) {
@@ -1233,7 +1330,7 @@ namespace platf::text_field {
         }
       }
 
-      cache->put_AutomationElementMode(AutomationElementMode_None);
+      cache->put_AutomationElementMode(AutomationElementMode_Full);
       cache->put_TreeScope(TreeScope_Element);
       return cache;
     }
@@ -1396,6 +1493,7 @@ namespace platf::text_field {
                          << " rule="sv << (published.rule ? published.rule : "?")
                          << " hwnd_source="sv << hwnd_source_name(published.hwnd_source)
                          << " " << published.diag
+                         << (published.refine_note.empty() ? ""s : " " + published.refine_note)
                          << " generation="sv << generation;
       }
     }
@@ -1403,7 +1501,10 @@ namespace platf::text_field {
     /**
      * @brief Release anything left in the pending-refinement slot.
      *
-     * MUST run on the worker thread: it created the MTA the elements live in.
+     * Called on the worker thread, after RemoveAllEventHandlers(), so no callback can refill
+     * the slot behind it. Any thread already in the MTA could do the release - the elements
+     * are not owned by the worker in particular - but doing it here is what guarantees the
+     * slot is empty before the apartment is torn down.
      */
     void drain_pending_element() {
       IUIAutomationElement *pending = nullptr;
