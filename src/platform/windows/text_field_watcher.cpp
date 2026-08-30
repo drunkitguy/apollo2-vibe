@@ -75,13 +75,42 @@ namespace platf::text_field {
     constexpr DWORD UIA_CONNECTION_TIMEOUT_MS = 500;
     constexpr DWORD UIA_TRANSACTION_TIMEOUT_MS = 1000;
 
+    /**
+     * @brief Where the window handle backing a classification came from.
+     *
+     * Recorded because the whole Win32 refinement - the only reliable source of a numeric
+     * verdict for desktop applications - depends on the cached NativeWindowHandle actually
+     * being readable under AutomationElementMode_None. If it never is, the watcher still
+     * fires and still classifies, so nothing looks broken; the only visible symptom would
+     * be that numeric fields are never reported. Logging the provenance makes that
+     * distinguishable from a debug log without any code change.
+     */
+    enum class hwnd_source_e : std::uint8_t {
+      none = 0,  ///< No window handle was resolved
+      uia_cache = 1,  ///< From the element's cached NativeWindowHandle
+      gui_thread_info = 2,  ///< From GetGUIThreadInfo(), after the same-process check
+    };
+
+    const char *hwnd_source_name(hwnd_source_e source) {
+      switch (source) {
+        case hwnd_source_e::uia_cache:
+          return "uia-cache";
+        case hwnd_source_e::gui_thread_info:
+          return "gui-thread-info";
+        default:
+          return "none";
+      }
+    }
+
     struct candidate_t {
       kind_e kind {kind_e::none};
       std::uint8_t flags {0};
       HWND hwnd {nullptr};
+      hwnd_source_e hwnd_source {hwnd_source_e::none};
 
       bool operator==(const candidate_t &other) const {
-        return kind == other.kind && flags == other.flags && hwnd == other.hwnd;
+        return kind == other.kind && flags == other.flags && hwnd == other.hwnd &&
+               hwnd_source == other.hwnd_source;
       }
     };
 
@@ -90,6 +119,10 @@ namespace platf::text_field {
     std::chrono::steady_clock::time_point g_candidate_since;
     candidate_t g_published;
     std::chrono::steady_clock::time_point g_last_publish;
+    // Tier A placeholder, mirroring state_t::input_scope in the header. Tier B has no way to
+    // read a TSF input scope out of another process, so this is always 0 and is carried only
+    // so the wire format and the public state struct do not have to change when a future
+    // implementation can fill it in. classify_focus() is the function that would set it.
     std::uint32_t g_published_input_scope {0};
     std::uint64_t g_generation {0};
 
@@ -133,6 +166,32 @@ namespace platf::text_field {
       bool result = fallback;
       if (value.vt == VT_BOOL) {
         result = value.boolVal != VARIANT_FALSE;
+      }
+      VariantClear(&value);
+      return result;
+    }
+
+    /**
+     * @brief Read a cached UI Automation integer property.
+     *
+     * Cached for the same reason as cached_bool(): a live accessor would block on the
+     * focused application from inside an event callback.
+     */
+    int cached_int(IUIAutomationElement *element, PROPERTYID property, int fallback) {
+      if (!element) {
+        return fallback;
+      }
+
+      VARIANT value;
+      VariantInit(&value);
+      if (FAILED(element->GetCachedPropertyValue(property, &value))) {
+        VariantClear(&value);
+        return fallback;
+      }
+
+      int result = fallback;
+      if (value.vt == VT_I4) {
+        result = value.lVal;
       }
       VariantClear(&value);
       return result;
@@ -224,11 +283,27 @@ namespace platf::text_field {
       if (SUCCEEDED(element->get_CachedNativeWindowHandle(&native_handle))) {
         hwnd = static_cast<HWND>(native_handle);
       }
-      if (!hwnd) {
+      if (hwnd) {
+        // No cross-check needed: this handle is the element's by construction.
+        result.hwnd_source = hwnd_source_e::uia_cache;
+      } else {
+        // THE FALLBACK MUST BE PROVEN TO BELONG TO THE SAME PROCESS AS THE ELEMENT.
+        // UI Automation focus events are NOT restricted to the foreground window, so a
+        // focused non-native element in a background window would otherwise be handed the
+        // foreground window's focus HWND - and step 3 below would then read ES_* style bits
+        // off an unrelated application's edit control and return a confident verdict for the
+        // wrong window. The class-name gate does not help here: it would be intact and
+        // applied to the wrong window.
         GUITHREADINFO gti {};
         gti.cbSize = sizeof(gti);
-        if (GetGUIThreadInfo(0, &gti)) {
-          hwnd = gti.hwndFocus;
+        if (GetGUIThreadInfo(0, &gti) && gti.hwndFocus) {
+          DWORD window_pid = 0;
+          GetWindowThreadProcessId(gti.hwndFocus, &window_pid);
+          const int element_pid = cached_int(element, UIA_ProcessIdPropertyId, 0);
+          if (element_pid != 0 && window_pid == static_cast<DWORD>(element_pid)) {
+            hwnd = gti.hwndFocus;
+            result.hwnd_source = hwnd_source_e::gui_thread_info;
+          }
         }
       }
       result.hwnd = hwnd;
@@ -395,6 +470,7 @@ namespace platf::text_field {
         UIA_ControlTypePropertyId,
         UIA_IsPasswordPropertyId,
         UIA_NativeWindowHandlePropertyId,
+        UIA_ProcessIdPropertyId,
         UIA_IsEnabledPropertyId,
         UIA_IsOffscreenPropertyId,
         UIA_IsKeyboardFocusablePropertyId,
@@ -558,23 +634,21 @@ namespace platf::text_field {
         BOOST_LOG(debug) << "Text field focus: kind="sv
                          << static_cast<unsigned>(published.kind)
                          << " flags="sv << static_cast<unsigned>(published.flags)
+                         << " hwnd_source="sv << hwnd_source_name(published.hwnd_source)
                          << " generation="sv << generation;
       }
     }
 
-    void worker_main(std::stop_token stop_token) {
-      SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-
-      const HRESULT co_init = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-      if (FAILED(co_init)) {
-        BOOST_LOG(warning) << "Text field detection: COM initialization failed, focus events disabled"sv;
-        return;
-      }
-
+    /**
+     * @brief The worker's actual work, between CoInitializeEx() and CoUninitialize().
+     *
+     * Split out so worker_main() can wrap it in a catch-all without also having to own the
+     * COM apartment lifetime.
+     */
+    void worker_body(std::stop_token stop_token) {
       IUIAutomation *automation = create_automation();
       if (!automation) {
         BOOST_LOG(warning) << "Text field detection: UI Automation unavailable, focus events disabled"sv;
-        CoUninitialize();
         return;
       }
 
@@ -582,7 +656,6 @@ namespace platf::text_field {
       if (!cache) {
         BOOST_LOG(warning) << "Text field detection: could not build the UI Automation cache request, focus events disabled"sv;
         automation->Release();
-        CoUninitialize();
         return;
       }
 
@@ -593,7 +666,6 @@ namespace platf::text_field {
         handler->Release();
         cache->Release();
         automation->Release();
-        CoUninitialize();
         return;
       }
 
@@ -616,13 +688,45 @@ namespace platf::text_field {
 
       g_running.store(false, std::memory_order_release);
 
-      // RemoveAllEventHandlers() before releasing anything, and CoUninitialize() on the
-      // same thread that created the client. UI Automation teardown from another thread
-      // is a known deadlock.
+      // RemoveAllEventHandlers() before releasing anything. That plus CoUninitialize() on
+      // the creating thread (worker_main, below) is not optional: UI Automation teardown
+      // from the wrong thread is a known deadlock.
       automation->RemoveAllEventHandlers();
       handler->Release();
       cache->Release();
       automation->Release();
+    }
+
+    void worker_main(std::stop_token stop_token) {
+      SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+
+      const HRESULT co_init = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+      if (FAILED(co_init)) {
+        BOOST_LOG(warning) << "Text field detection: COM initialization failed, focus events disabled"sv;
+        return;
+      }
+
+      // An exception escaping a std::jthread body calls std::terminate() and takes the whole
+      // host process down with it. Nothing in worker_body() is expected to throw - the UI
+      // Automation surface is HRESULT-based - but operator new and the logging sink both
+      // allocate. Losing focus detection is survivable; losing the stream is not.
+      try {
+        worker_body(stop_token);
+      } catch (...) {
+        // This path leaks the UI Automation interfaces and skips RemoveAllEventHandlers,
+        // because there is nothing sane left to unwind through. It happens at most once per
+        // process and the watcher stays down afterwards, which is a far better outcome than
+        // terminating the host mid-stream.
+        g_running.store(false, std::memory_order_release);
+        try {
+          BOOST_LOG(error) << "Text field detection: the focus watcher thread stopped after an "
+                              "unexpected exception, focus events disabled"sv;
+        } catch (...) {
+          // A logger that throws while reporting a throw is not worth a second attempt.
+        }
+      }
+
+      // Same thread that created the UI Automation client, as its teardown requires.
       CoUninitialize();
     }
 

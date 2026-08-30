@@ -1371,9 +1371,11 @@ namespace stream {
    * focus watcher; only the caller is Windows-only.
    */
   int send_text_field_state(session_t *session, std::uint8_t kind, std::uint8_t flags, std::uint32_t input_scope) {
+    // Unlike send_hdr_mode there is no "still waiting for PING" case to warn about: the
+    // only caller runs inside the branch where the peer is already connected, so a warning
+    // here could never fire and would only be misleading if it somehow did. Kept as a
+    // silent contract guard for any future caller.
     if (!session->control.peer) {
-      BOOST_LOG(warning) << "Couldn't send text field focus, still waiting for PING from Moonlight"sv;
-      // Still waiting for PING from Moonlight
       return -1;
     }
 
