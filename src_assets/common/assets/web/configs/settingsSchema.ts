@@ -611,6 +611,7 @@ export const settingsCategories: SettingsCategory[] = [
           boolean('high_resolution_scrolling'),
           boolean('native_pen_touch'),
           boolean('text_field_detection', { platform: 'windows' }),
+          boolean('text_field_numeric_hints', { platform: 'windows' }),
         ],
       },
       {
@@ -842,6 +843,7 @@ export const settingsDefaults: Record<string, unknown> = {
   high_resolution_scrolling: true,
   native_pen_touch: true,
   text_field_detection: false,
+  text_field_numeric_hints: false,
   key_repeat_delay: 500,
   key_repeat_frequency: 24.9,
   install_steam_audio_drivers: true,

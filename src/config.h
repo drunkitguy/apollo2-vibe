@@ -330,6 +330,13 @@ namespace config {
     // input_t POSITIONALLY, so inserting a member in the middle silently shifts every
     // default after it and -Wmissing-field-initializers will not catch it.
     bool text_field_detection;
+
+    // Windows only, and only meaningful when text_field_detection is on. Lets the focus
+    // classifier fall back to matching English keywords in a field's label/placeholder/
+    // automation id when the application publishes no structural numeric signal. OFF by
+    // default and deliberately so: an Android numeric IME layout has no letters key, so a
+    // wrong numeric guess on a text field means the user cannot type into it at all.
+    bool text_field_numeric_hints;
   };
 
   struct frame_limiter_t {

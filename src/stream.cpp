@@ -430,7 +430,8 @@ namespace stream {
 
     std::uint8_t version;  // Payload revision; 1 in this implementation
     std::uint8_t field_kind;  // 0 none, 1 text, 2 numeric, 3 password
-    std::uint8_t flags;  // bit0 read-only, bit1 multiline, bit2 classified by UI Automation
+    std::uint8_t flags;  // bit0 read-only, bit1 multiline, bit2 classified by UI Automation,
+                         // bit3 low-confidence keyword guess, bit4 numeric evidence present
     std::uint8_t reserved;  // Must be 0
     std::uint32_t input_scope;  // Little endian; 0 = unknown. Reserved for a future TSF implementation.
   };

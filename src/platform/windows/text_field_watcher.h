@@ -38,6 +38,8 @@ namespace platf::text_field {
   inline constexpr std::uint8_t flag_read_only = 0x01;  ///< The field rejects input
   inline constexpr std::uint8_t flag_multiline = 0x02;  ///< The field accepts multiple lines
   inline constexpr std::uint8_t flag_source_uia = 0x04;  ///< Classified from UI Automation rather than Win32 styles
+  inline constexpr std::uint8_t flag_low_confidence = 0x08;  ///< The verdict came from the label keyword tier
+  inline constexpr std::uint8_t flag_numeric = 0x10;  ///< Numeric evidence was found; load-bearing when kind is password
 
   /**
    * @brief Snapshot of the focus state the watcher has settled on.

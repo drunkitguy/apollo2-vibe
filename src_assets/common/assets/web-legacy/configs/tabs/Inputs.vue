@@ -151,6 +151,13 @@ const platform = computed(() =>
       class="mb-3"
     />
 
+    <ConfigFieldRenderer
+      v-if="platform === 'windows' && config.text_field_detection === 'enabled'"
+      setting-key="text_field_numeric_hints"
+      v-model="config.text_field_numeric_hints"
+      class="mb-3"
+    />
+
     <hr />
 
     <ConfigFieldRenderer
