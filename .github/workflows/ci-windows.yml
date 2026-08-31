@@ -610,6 +610,34 @@ jobs:
             fi
           done
 
+      # Staged before the MSI is built so a packaging failure still leaves
+      # something installable to download. This is the same tree the installer
+      # lays down, minus the installer.
+      - name: Stage portable build
+        id: stage-portable-build
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+
+          rm -rf portable
+          cmake --install build --prefix portable
+
+          if [[ -z "$(find portable -name 'sunshine.exe' -print -quit)" ]]; then
+            echo "Staged tree has no sunshine.exe." >&2
+            find portable -maxdepth 2 -print >&2 || true
+            exit 1
+          fi
+
+      - name: Upload portable build
+        if: always() && steps.stage-portable-build.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: vibepollo-portable-${{ matrix.name }}
+          path: portable
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
       # WiX already installed before configure so env:WIX is available
 
       - name: Validate SignPath configuration
