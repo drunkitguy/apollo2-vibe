@@ -19,6 +19,10 @@ on:
         required: false
         type: string
         default: ''
+      portable_release_tag:
+        required: false
+        type: string
+        default: ''
       build_only:
         required: false
         type: boolean
@@ -637,6 +641,42 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           overwrite: true
+
+      # Publishing from here rather than from the MSI path so a build is
+      # downloadable without waiting on packaging or signing.
+      - name: Zip the portable build
+        id: zip-portable-build
+        if: inputs.portable_release_tag != '' && steps.stage-portable-build.outcome == 'success'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+
+          zip_name="vibepollo-${{ inputs.portable_release_tag }}-${{ matrix.name }}-portable.zip"
+          rm -f "${zip_name}"
+          (cd portable && zip -r -q "../${zip_name}" .)
+          echo "zip_name=${zip_name}" >> "${GITHUB_OUTPUT}"
+
+      - name: Publish the portable release
+        if: inputs.portable_release_tag != '' && steps.zip-portable-build.outcome == 'success'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.portable_release_tag }}
+          target_commitish: ${{ github.sha }}
+          files: ${{ steps.zip-portable-build.outputs.zip_name }}
+          name: Vibepollo ${{ inputs.portable_release_tag }} (portable)
+          body: |
+            Unsigned portable build of the Vibepollo host, produced by CI from
+            `${{ github.sha }}`. Unzip it over an existing install, or into a
+            folder of its own, and run `sunshine.exe`.
+
+            This build includes Windows text field detection, which reports the
+            focused control to the client so a Moonlight client can raise the
+            right on-screen keyboard. It is **off by default**: turn on
+            **Text Field Detection** in the host settings to use it.
+
+            No installer: the MSI packaging step in this repository's CI is
+            currently failing, and this release exists so a working build is
+            available regardless.
 
       # WiX already installed before configure so env:WIX is available
 

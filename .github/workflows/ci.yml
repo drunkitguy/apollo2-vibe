@@ -9,6 +9,10 @@ on:
         description: Tag to publish, for example v1.16.0-alpha.4
         required: false
         type: string
+      portable_release_tag:
+        description: Publish an unsigned portable Windows build under this tag, for example v0.2.0-vibe
+        required: false
+        type: string
   push:
     branches:
       - '**'
@@ -208,7 +212,8 @@ jobs:
     if: github.event_name != 'push' || needs.release-candidate.outputs.should_release == 'true'
     permissions:
       actions: read
-      contents: read
+      # write so the Windows job can publish the unsigned portable release
+      contents: write
     uses: ./.github/workflows/ci-windows.yml
     with:
       build_only: ${{ needs.release-candidate.outputs.should_release == 'true' }}
@@ -216,6 +221,7 @@ jobs:
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
       release_version: ${{ needs.release-candidate.outputs.release_version || '0.0.0' }}
       release_tag: ${{ needs.release-candidate.outputs.tag_name }}
+      portable_release_tag: ${{ inputs.portable_release_tag || '' }}
       release_artifact_retention_days: ${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}
       symbol_product_name: Vibepollo
       publish_symbols: ${{ needs.release-candidate.outputs.should_release == 'true' }}
