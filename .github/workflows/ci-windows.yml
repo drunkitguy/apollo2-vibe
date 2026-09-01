@@ -610,6 +610,34 @@ jobs:
             fi
           done
 
+      # Uploaded on its own because it is useful without the rest of the host:
+      # it reports the focused field to a client over UDP, so an existing
+      # Vibepollo install does not have to be replaced to get that.
+      - name: Collect the focus reporter
+        id: collect-focus-reporter
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $exe = Get-ChildItem -Path build -Filter focus_reporter.exe -Recurse -File |
+                 Select-Object -First 1
+          if (-not $exe) { throw 'focus_reporter.exe was not built.' }
+
+          New-Item -ItemType Directory -Force -Path focus-reporter | Out-Null
+          Copy-Item $exe.FullName focus-reporter\
+          Copy-Item tools\focus_reporter\README.md focus-reporter\ -ErrorAction SilentlyContinue
+          Write-Host "Collected $($exe.FullName) ($([math]::Round($exe.Length / 1KB)) KB)"
+
+      - name: Upload the focus reporter
+        if: always() && steps.collect-focus-reporter.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: focus-reporter-${{ matrix.name }}
+          path: focus-reporter
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
       # WiX already installed before configure so env:WIX is available
 
       - name: Validate SignPath configuration
