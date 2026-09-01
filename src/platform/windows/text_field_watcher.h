@@ -85,4 +85,19 @@ namespace platf::text_field {
    */
   state_t current();
 
+#if defined(SUNSHINE_FOCUS_REPORTER)
+  /**
+   * @brief Set the keyword tier on or off, for builds with no Sunshine configuration.
+   *
+   * Only compiled into tools/focus_reporter, which builds text_field_watcher.cpp into a
+   * standalone executable and therefore has no `config::input` to read. Takes effect on
+   * the next start(); the running worker only ever sees the snapshot start() took.
+   *
+   * The Sunshine build does not have this and does not want it: there the setting is
+   * `text_field_numeric_hints`, read from the configuration exactly as every other
+   * setting is.
+   */
+  void set_numeric_hints(bool enabled);
+#endif
+
 }  // namespace platf::text_field

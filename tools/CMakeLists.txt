@@ -153,3 +153,37 @@ target_link_libraries(sunshine_display_helper
         taskschd
         ${PLATFORM_LIBRARIES})
 target_compile_options(sunshine_display_helper PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
+
+# Focus reporter: standalone, silent, out-of-stream twin of the 0x3003 text field packet.
+#
+# Deliberately NOT in SUNSHINE_WINDOWS_PACKAGED_TARGETS (cmake/targets/windows.cmake) and
+# deliberately not copied next to sunshine.exe. It is not part of Vibepollo, it is not a
+# prep command, and nothing in the host runs it: it is a file the user copies somewhere and
+# deletes when they are done with it. Putting it in the MSI would make it something they
+# have to uninstall, which is the one thing tools/focus_reporter/README.md promises it is
+# not. See that README for what it does and why it exists.
+#
+# The classifier is SHARED, not copied: text_field_watcher.cpp is compiled straight into
+# this target. SUNSHINE_FOCUS_REPORTER swaps its single read of config::input for a setter
+# on the command line, which is the only Sunshine-side dependency it has - logging.cpp and
+# logging_policy.cpp link exactly as they do for playnite-launcher above.
+add_executable(focus-reporter
+        focus_reporter/focus_reporter.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/windows/text_field_watcher.cpp
+        ${CMAKE_SOURCE_DIR}/src/logging.cpp
+        ${CMAKE_SOURCE_DIR}/src/logging_policy.cpp)
+set_target_properties(focus-reporter PROPERTIES CXX_STANDARD 23)
+# No console window, ever. This runs from a Startup shortcut on somebody's gaming PC.
+set_target_properties(focus-reporter PROPERTIES WIN32_EXECUTABLE TRUE)
+set_target_properties(focus-reporter PROPERTIES OUTPUT_NAME "focus_reporter")
+target_compile_definitions(focus-reporter PRIVATE SUNSHINE_FOCUS_REPORTER=1)
+target_link_libraries(focus-reporter
+        ${Boost_LIBRARIES}
+        ${CMAKE_THREAD_LIBS_INIT}
+        user32
+        ole32
+        oleaut32
+        uiautomationcore
+        ws2_32
+        ${PLATFORM_LIBRARIES})
+target_compile_options(focus-reporter PRIVATE ${SUNSHINE_COMPILE_OPTIONS})

@@ -214,9 +214,21 @@ namespace platf::text_field {
     // someone else's UI thread is not an acceptable price for a keyboard layout.
     std::atomic_bool g_have_timeouts {false};
 
-    // Snapshot of config::input.text_field_numeric_hints, taken in start(). The keyword
-    // tier is off unless the operator turned it on.
+    // Snapshot of the keyword-tier setting, taken in start(). The keyword tier is off
+    // unless the operator turned it on.
     std::atomic_bool g_numeric_hints {false};
+
+#if defined(SUNSHINE_FOCUS_REPORTER)
+    // tools/focus_reporter builds this file into a standalone executable that has no
+    // Sunshine configuration to read - see tools/focus_reporter/README.md. The keyword tier
+    // is still off by default there; the tool sets this from its own command line.
+    //
+    // This is the ONLY thing in this file that differs between the two builds. The
+    // classification rules, the debounce, the refinement pass and the safety poll are
+    // literally the same object code in both, which is the point: two copies of R3d would
+    // become two different answers to "is this field numeric" within a release.
+    std::atomic_bool g_numeric_hints_setting {false};
+#endif
 
     /**
      * @brief Record a newly observed focus candidate.
@@ -1656,7 +1668,11 @@ namespace platf::text_field {
 
     // Read once, here, on the caller's thread: the worker and the callback pool only ever
     // see the atomic.
+#if defined(SUNSHINE_FOCUS_REPORTER)
+    g_numeric_hints.store(g_numeric_hints_setting.load(std::memory_order_acquire), std::memory_order_release);
+#else
     g_numeric_hints.store(config::input.text_field_numeric_hints, std::memory_order_release);
+#endif
 
     {
       std::lock_guard state_lg {g_state_mutex};
@@ -1704,6 +1720,12 @@ namespace platf::text_field {
   bool running() {
     return g_running.load(std::memory_order_acquire);
   }
+
+#if defined(SUNSHINE_FOCUS_REPORTER)
+  void set_numeric_hints(bool enabled) {
+    g_numeric_hints_setting.store(enabled, std::memory_order_release);
+  }
+#endif
 
   state_t current() {
     std::lock_guard lg {g_state_mutex};
