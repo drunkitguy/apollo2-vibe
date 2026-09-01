@@ -644,17 +644,22 @@ jobs:
 
       # Publishing from here rather than from the MSI path so a build is
       # downloadable without waiting on packaging or signing.
+      # PowerShell rather than the msys2 shell: msys2 here has no zip binary.
       - name: Zip the portable build
         id: zip-portable-build
         if: inputs.portable_release_tag != '' && steps.stage-portable-build.outcome == 'success'
-        shell: msys2 {0}
+        shell: pwsh
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = 'Stop'
 
-          zip_name="vibepollo-${{ inputs.portable_release_tag }}-${{ matrix.name }}-portable.zip"
-          rm -f "${zip_name}"
-          (cd portable && zip -r -q "../${zip_name}" .)
-          echo "zip_name=${zip_name}" >> "${GITHUB_OUTPUT}"
+          $zipName = "vibepollo-${{ inputs.portable_release_tag }}-${{ matrix.name }}-portable.zip"
+          if (Test-Path $zipName) { Remove-Item $zipName -Force }
+          Compress-Archive -Path (Join-Path 'portable' '*') -DestinationPath $zipName -CompressionLevel Optimal
+
+          $size = (Get-Item $zipName).Length
+          if ($size -lt 1MB) { throw "Portable zip is only $size bytes, something is missing." }
+          Write-Host "Wrote $zipName ($([math]::Round($size / 1MB, 1)) MB)"
+          "zip_name=$zipName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Publish the portable release
         if: inputs.portable_release_tag != '' && steps.zip-portable-build.outcome == 'success'
