@@ -158,8 +158,12 @@ registry keys, and creates no files unless you passed `--verbose`.
 2. **Stop it coming back.** <kbd>Win</kbd>+<kbd>R</kbd> → `shell:startup` → delete the
    `focus_reporter` shortcut. If you used Task Scheduler instead, delete the task there.
 3. **Delete the exe**, and the log file if you made one.
+4. **Remove the firewall rule**, if you allowed the prompt during setup. Windows Defender
+   Firewall → Advanced settings → Inbound Rules → find the `focus_reporter` entry (it
+   names the path you ran it from) → Delete. This is the only thing that outlives the
+   exe. It is inert once the exe is gone, but it is a leftover and this is how it goes.
 
-That is all of it. Nothing else on the machine was touched.
+That is everything it leaves behind.
 
 On the handheld, turn **"Also listen for a PC that cannot be rebuilt"** back off. That
 unbinds the UDP port and stops the hellos.
