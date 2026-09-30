@@ -39,15 +39,11 @@ namespace platf::window_target {
   std::uintptr_t choose(std::uintptr_t current);
 
   /**
-   * @brief Move a newly chosen window onto the capture display, maximize it when it is
-   * resizable and does not already cover the display, and focus it.
-   * @param hwnd The target window.
-   * @param output Capture display rectangle in desktop coordinates.
-   */
-  void prepare_target(HWND hwnd, const RECT &output);
-
-  /**
-   * @brief Polls the window choice in the background and debounces changes.
+   * @brief Polls the window choice in the background, debounces changes, and places and
+   * focuses each newly committed target.
+   *
+   * Every call that can block on another process (moving, restoring or focusing a window)
+   * runs on the tracker thread, never on the capture thread.
    */
   class tracker_t {
   public:
@@ -62,6 +58,7 @@ namespace platf::window_target {
 
     /**
      * @brief Choose a target synchronously and commit it without debouncing.
+     * Placement and focus follow on the tracker thread.
      * @return Window handle, or `0` for none.
      */
     std::uintptr_t select_now();
@@ -80,8 +77,13 @@ namespace platf::window_target {
     RECT _output;
     std::mutex _mutex;
     std::condition_variable_any _cv;
+    bool _wake = false;  ///< A new target was committed outside the tracker thread.
     dxgi::window_policy::target_debouncer_t _debouncer;
     std::atomic<std::uintptr_t> _committed {0};
+    std::uintptr_t _placed_target = 0;  ///< Target the placement state below belongs to.
+    int _placement_steps = 0;  ///< Placement attempts made for `_placed_target`.
+    bool _placement_done = false;
+    bool _focused = false;
     std::jthread _thread;
   };
 

@@ -76,6 +76,7 @@ namespace proc {
     std::string name;
     std::string command;
     std::string working_dir;
+    bool has_detached_commands {false};
     uint32_t root_pid {0};
   };
 #endif
@@ -261,6 +262,12 @@ namespace proc {
     std::string _active_client_uuid;
 
     mutable std::mutex _apps_mutex;
+
+    // Guards _app_id, _app, _process and _process_group against the readers that run
+    // off the stream lifecycle thread (running_app_state, running_app_contains_pid and
+    // foreground_window_matches_running_app, polled by window-only capture). Other _app
+    // fields changed in place while an app runs are never read by those readers.
+    mutable std::mutex _running_state_mutex;
 
     // If no command associated with _app_id, yet it's still running
     bool placebo {};

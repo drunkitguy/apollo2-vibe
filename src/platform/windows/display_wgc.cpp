@@ -210,11 +210,9 @@ namespace platf::dxgi {
         return {};
       }
 
+      // Moving and focusing the target can block on its process, so the tracker thread does it.
       auto tracker = std::make_unique<window_target::tracker_t>(output);
       const auto hwnd = tracker->select_now();
-      if (hwnd != 0) {
-        window_target::prepare_target(reinterpret_cast<HWND>(hwnd), output);
-      }
       ipc_session.set_window_target(hwnd);
       capture_start = std::chrono::steady_clock::now();
       return tracker;

@@ -779,6 +779,15 @@ namespace platf::foreground_app {
     return matcher;
   }
 
+  bool is_passive_overlay_window(HWND hwnd) {
+    const auto ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    // Layered and transparent windows let clicks fall through; they are overlays even with a caption.
+    if ((ex_style & WS_EX_LAYERED) != 0 && (ex_style & WS_EX_TRANSPARENT) != 0) {
+      return true;
+    }
+    return window_is_passive_compositor_host(hwnd) || !window_has_visible_alpha(hwnd);
+  }
+
   bool is_desktop_ui_window(HWND hwnd, std::string_view executable) {
     return hwnd == GetDesktopWindow() ||
            hwnd == GetShellWindow() ||

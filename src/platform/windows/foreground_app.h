@@ -69,6 +69,11 @@ namespace platf::foreground_app {
    */
   bool is_desktop_ui_window(HWND hwnd, std::string_view executable);
 
+  /**
+   * @brief True for click-through, non-activating, transparent or fully see-through overlay windows.
+   */
+  bool is_passive_overlay_window(HWND hwnd);
+
   bool path_equal_or_basename_match(std::string_view lhs, std::string_view rhs);
   bool path_is_under_directory(std::string_view path, std::string_view directory);
   bool playnite_foreground_matches_for_tests(

@@ -8,7 +8,11 @@
 namespace {
   using platf::dxgi::window_policy::choose_target;
   using platf::dxgi::window_policy::compute_window_blit;
+  using platf::dxgi::window_policy::placement_action_e;
+  using platf::dxgi::window_policy::plan_placement;
   using platf::dxgi::window_policy::rect_i;
+  using platf::dxgi::window_policy::selection_mode_e;
+  using platf::dxgi::window_policy::selection_mode_for;
   using platf::dxgi::window_policy::started_after_launch;
   using platf::dxgi::window_policy::target_debouncer_t;
   using platf::dxgi::window_policy::window_blit_t;
@@ -151,7 +155,7 @@ TEST(WindowCapturePolicy, EligibleForegroundWindowWins) {
     candidate(2, 1'000, true, true),
   };
 
-  EXPECT_EQ(choose_target(candidates, 1, true), 2u);
+  EXPECT_EQ(choose_target(candidates, 1, selection_mode_e::app_matcher), 2u);
 }
 
 TEST(WindowCapturePolicy, CurrentTargetIsKeptWhileStillEligible) {
@@ -161,7 +165,7 @@ TEST(WindowCapturePolicy, CurrentTargetIsKeptWhileStillEligible) {
     candidate(3, 9'000'000, false, true),
   };
 
-  EXPECT_EQ(choose_target(candidates, 2, true), 2u);
+  EXPECT_EQ(choose_target(candidates, 2, selection_mode_e::app_matcher), 2u);
 }
 
 TEST(WindowCapturePolicy, LargestEligibleWindowIsTheFallback) {
@@ -172,7 +176,7 @@ TEST(WindowCapturePolicy, LargestEligibleWindowIsTheFallback) {
     candidate(4, 2'000'000),
   };
 
-  EXPECT_EQ(choose_target(candidates, 99, true), 2u);
+  EXPECT_EQ(choose_target(candidates, 99, selection_mode_e::app_matcher), 2u);
 }
 
 TEST(WindowCapturePolicy, WindowFromProcessStartedAfterLaunchIsEligibleWithoutAMatch) {
@@ -181,7 +185,7 @@ TEST(WindowCapturePolicy, WindowFromProcessStartedAfterLaunchIsEligibleWithoutAM
     candidate(2, 9'000'000, false),
   };
 
-  EXPECT_EQ(choose_target(candidates, 0, true), 1u);
+  EXPECT_EQ(choose_target(candidates, 0, selection_mode_e::app_matcher), 1u);
 }
 
 TEST(WindowCapturePolicy, ForegroundGameStartedOutsideTheJobIsFollowed) {
@@ -190,7 +194,7 @@ TEST(WindowCapturePolicy, ForegroundGameStartedOutsideTheJobIsFollowed) {
     candidate(2, 2'073'600, false, true, false, true),
   };
 
-  EXPECT_EQ(choose_target(candidates, 1, true), 2u);
+  EXPECT_EQ(choose_target(candidates, 1, selection_mode_e::app_matcher), 2u);
 }
 
 TEST(WindowCapturePolicy, PreexistingUnrelatedWindowsAreNeverChosenWithAMatcher) {
@@ -199,37 +203,94 @@ TEST(WindowCapturePolicy, PreexistingUnrelatedWindowsAreNeverChosenWithAMatcher)
     candidate(2, 500'000, false),
   };
 
-  EXPECT_EQ(choose_target(candidates, 0, true), 0u);
-  EXPECT_EQ(choose_target(candidates, 2, true), 0u);
+  EXPECT_EQ(choose_target(candidates, 0, selection_mode_e::app_matcher), 0u);
+  EXPECT_EQ(choose_target(candidates, 2, selection_mode_e::app_matcher), 0u);
 }
 
-TEST(WindowCapturePolicy, WithoutAMatcherTheForegroundWindowIsFollowed) {
+TEST(WindowCapturePolicy, DesktopModeFollowsTheForegroundWindow) {
   const std::array candidates {
     candidate(1, 4'000'000, false),
     candidate(2, 1'000, false, true),
   };
 
-  EXPECT_EQ(choose_target(candidates, 1, false), 2u);
+  EXPECT_EQ(choose_target(candidates, 1, selection_mode_e::desktop), 2u);
 }
 
-TEST(WindowCapturePolicy, WithoutAMatcherTheCurrentTargetIsKeptWhenNothingIsForeground) {
+TEST(WindowCapturePolicy, DesktopModeKeepsTheCurrentTargetWhenNothingIsForeground) {
   const std::array candidates {
     candidate(1, 4'000'000, false),
     candidate(2, 1'000, false),
   };
 
-  EXPECT_EQ(choose_target(candidates, 2, false), 2u);
-  EXPECT_EQ(choose_target(candidates, 0, false), 0u);
-  EXPECT_EQ(choose_target(candidates, 7, false), 0u);
+  EXPECT_EQ(choose_target(candidates, 2, selection_mode_e::desktop), 2u);
+  EXPECT_EQ(choose_target(candidates, 0, selection_mode_e::desktop), 0u);
+  EXPECT_EQ(choose_target(candidates, 7, selection_mode_e::desktop), 0u);
+}
+
+TEST(WindowCapturePolicy, LaunchedAppModeOnlyAcceptsWindowsStartedAfterTheLaunch) {
+  const std::array candidates {
+    candidate(1, 2'073'600, false, true),
+    candidate(2, 500'000, false),
+    candidate(3, 1'000'000, false, false, false, true),
+  };
+
+  EXPECT_EQ(choose_target(candidates, 0, selection_mode_e::launched_app), 3u);
+  EXPECT_EQ(choose_target(candidates, 2, selection_mode_e::launched_app), 3u);
+}
+
+TEST(WindowCapturePolicy, LaunchedAppModeNeverFollowsPreexistingForegroundWindows) {
+  const std::array candidates {
+    candidate(1, 2'073'600, false, true),
+    candidate(2, 500'000, false),
+  };
+
+  EXPECT_EQ(choose_target(candidates, 0, selection_mode_e::launched_app), 0u);
+  EXPECT_EQ(choose_target(candidates, 1, selection_mode_e::launched_app), 0u);
+}
+
+TEST(WindowCapturePolicy, LaunchedAppModeFollowsANewForegroundWindow) {
+  const std::array candidates {
+    candidate(1, 2'073'600, false, false, false, true),
+    candidate(2, 500'000, false, true, false, true),
+  };
+
+  EXPECT_EQ(choose_target(candidates, 1, selection_mode_e::launched_app), 2u);
+}
+
+TEST(WindowCapturePolicy, DesktopModeFollowsAnyForegroundCandidate) {
+  const std::array candidates {
+    candidate(1, 2'073'600, false, false, false, true),
+    candidate(2, 500'000, false, true),
+  };
+
+  EXPECT_EQ(choose_target(candidates, 1, selection_mode_e::desktop), 2u);
+}
+
+TEST(WindowCapturePolicy, OnlyTheCommandLessDesktopAppFollowsTheForeground) {
+  EXPECT_EQ(selection_mode_for(false, false, false), selection_mode_e::desktop);
+  EXPECT_EQ(selection_mode_for(true, false, false), selection_mode_e::desktop);
+  EXPECT_EQ(selection_mode_for(true, true, true), selection_mode_e::app_matcher);
+  EXPECT_EQ(selection_mode_for(true, true, false), selection_mode_e::launched_app);
+}
+
+TEST(WindowCapturePolicy, AnAppWithACommandNeverFollowsAPreexistingForegroundWindow) {
+  // A browser that was open before the launch is in the foreground; the launched app has no window yet.
+  const std::array candidates {
+    candidate(1, 2'073'600, false, true),
+  };
+
+  EXPECT_EQ(choose_target(candidates, 0, selection_mode_for(true, true, false)), 0u);
+  EXPECT_EQ(choose_target(candidates, 0, selection_mode_for(true, true, true)), 0u);
+  EXPECT_EQ(choose_target(candidates, 0, selection_mode_for(true, false, false)), 1u);
 }
 
 TEST(WindowCapturePolicy, NothingIsChosenWhenOnlyShellWindowsExist) {
   // Shell and desktop windows are filtered out before policy evaluation.
   const std::vector<window_candidate_t> none;
 
-  EXPECT_EQ(choose_target(none, 0, false), 0u);
-  EXPECT_EQ(choose_target(none, 5, false), 0u);
-  EXPECT_EQ(choose_target(none, 5, true), 0u);
+  EXPECT_EQ(choose_target(none, 0, selection_mode_e::desktop), 0u);
+  EXPECT_EQ(choose_target(none, 5, selection_mode_e::desktop), 0u);
+  EXPECT_EQ(choose_target(none, 5, selection_mode_e::app_matcher), 0u);
 }
 
 TEST(WindowCapturePolicy, MinimizedWindowsOnlyWinWhenNothingElseQualifies) {
@@ -237,19 +298,19 @@ TEST(WindowCapturePolicy, MinimizedWindowsOnlyWinWhenNothingElseQualifies) {
     candidate(1, 4'000'000, true, true, true),
     candidate(2, 1'000),
   };
-  EXPECT_EQ(choose_target(mixed, 1, true), 2u);
+  EXPECT_EQ(choose_target(mixed, 1, selection_mode_e::app_matcher), 2u);
 
   const std::array only_minimized {
     candidate(1, 4'000'000, true, false, true),
   };
-  EXPECT_EQ(choose_target(only_minimized, 0, true), 1u);
+  EXPECT_EQ(choose_target(only_minimized, 0, selection_mode_e::app_matcher), 1u);
 
   const std::array follow {
     candidate(3, 1'000, false, true, true),
     candidate(4, 1'000, false),
   };
-  EXPECT_EQ(choose_target(follow, 4, false), 4u);
-  EXPECT_EQ(choose_target(follow, 0, false), 3u);
+  EXPECT_EQ(choose_target(follow, 4, selection_mode_e::desktop), 4u);
+  EXPECT_EQ(choose_target(follow, 0, selection_mode_e::desktop), 3u);
 }
 
 TEST(WindowCapturePolicy, DebouncerNeedsThreeEqualPolls) {
@@ -284,4 +345,54 @@ TEST(WindowCapturePolicy, DebouncerCommitsLossOfTarget) {
   EXPECT_FALSE(debouncer.observe(0, 3));
   EXPECT_TRUE(debouncer.observe(0, 3));
   EXPECT_EQ(debouncer.committed, 0u);
+}
+
+TEST(WindowCapturePolicy, PlacementLeavesAWindowCoveringTheOutputAlone) {
+  const auto placement = plan_placement(primary_output, primary_output, primary_output, true, false, false);
+
+  EXPECT_EQ(placement.action, placement_action_e::none);
+}
+
+TEST(WindowCapturePolicy, PlacementRestoresMinimizedAndMaximizedWindowsFirst) {
+  constexpr rect_i window {-32000, -32000, -31840, -31972};
+  EXPECT_EQ(plan_placement(primary_output, window, {0, 0, 0, 0}, true, true, false).action, placement_action_e::restore);
+
+  constexpr rect_i maximized {-8, -8, 1928, 1040};
+  constexpr rect_i maximized_client {0, 23, 1920, 1032};
+  EXPECT_EQ(plan_placement(primary_output, maximized, maximized_client, true, false, true).action, placement_action_e::restore);
+}
+
+TEST(WindowCapturePolicy, PlacementSizesAResizableWindowSoItsClientAreaFillsTheOutput) {
+  constexpr rect_i output {1920, 0, 3840, 1080};
+  constexpr rect_i window {100, 100, 916, 739};
+  constexpr rect_i client {108, 131, 908, 731};
+
+  const auto placement = plan_placement(output, window, client, true, false, false);
+
+  ASSERT_EQ(placement.action, placement_action_e::set_rect);
+  EXPECT_EQ(placement.window.left, 1912);
+  EXPECT_EQ(placement.window.top, -31);
+  EXPECT_EQ(placement.window.right, 3848);
+  EXPECT_EQ(placement.window.bottom, 1088);
+}
+
+TEST(WindowCapturePolicy, PlacementMovesAFixedWindowClientAreaFirstOntoTheOutput) {
+  constexpr rect_i output {1920, 0, 3840, 1080};
+  constexpr rect_i window {100, 100, 916, 739};
+  constexpr rect_i client {108, 131, 908, 731};
+
+  const auto placement = plan_placement(output, window, client, false, false, false);
+
+  ASSERT_EQ(placement.action, placement_action_e::set_rect);
+  EXPECT_EQ(placement.window.left, 1912);
+  EXPECT_EQ(placement.window.top, -31);
+  EXPECT_EQ(placement.window.right, 2728);
+  EXPECT_EQ(placement.window.bottom, 608);
+}
+
+TEST(WindowCapturePolicy, PlacementLeavesAFixedWindowAlreadyOnTheOutput) {
+  constexpr rect_i window {100, 100, 916, 739};
+  constexpr rect_i client {108, 131, 908, 731};
+
+  EXPECT_EQ(plan_placement(primary_output, window, client, false, false, false).action, placement_action_e::none);
 }

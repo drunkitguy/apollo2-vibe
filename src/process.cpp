@@ -969,7 +969,7 @@ namespace proc {
 
   proc_t &proc_t::operator=(proc_t &&other) noexcept {
     if (this != &other) {
-      std::scoped_lock lk(_apps_mutex, other._apps_mutex);
+      std::scoped_lock lk(_apps_mutex, other._apps_mutex, _running_state_mutex);
 #ifdef _WIN32
       stop_lossless_scaling_support();
 #endif
@@ -1249,7 +1249,6 @@ namespace proc {
   }
   int proc_t::execute(const ctx_t &app, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {
 #ifdef _WIN32
-    platf::window_target::mark_launch();
     std::optional<std::filesystem::path> resolved_lossless_exe_path;
     std::string resolved_lossless_exe_utf8;
     _virtual_display_active = false;
@@ -1267,8 +1266,11 @@ namespace proc {
       terminate(false, false, skip_display_revert, true);
     }
 
-    _app = app;
-    _app_id = util::from_view(app.id);
+    {
+      std::lock_guard running_state_lock(_running_state_mutex);
+      _app = app;
+      _app_id = util::from_view(app.id);
+    }
 #ifdef _WIN32
     // A replacement app owns the streaming display configuration. Any
     // restore deferred by the previous app must not fire at this session's end.
@@ -1927,6 +1929,11 @@ namespace proc {
 
     _env["APOLLO_APP_STATUS"] = "RUNNING";
 
+#ifdef _WIN32
+    // Windows of processes created from here on belong to the app (window-only capture).
+    platf::window_target::mark_launch();
+#endif
+
     for (auto &cmd : _app.detached) {
       boost::filesystem::path working_dir = _app.working_dir.empty() ?
                                               find_working_directory(cmd, _env) :
@@ -2045,7 +2052,10 @@ namespace proc {
         } catch (...) {}
         std::error_code fec;
         boost::filesystem::path wd;  // empty wd
-        _process = platf::run_command(false, true, cmd, wd, _env, _pipe.get(), fec, &_process_group);
+        {
+          std::lock_guard running_state_lock(_running_state_mutex);
+          _process = platf::run_command(false, true, cmd, wd, _env, _pipe.get(), fec, &_process_group);
+        }
         if (fec) {
           BOOST_LOG(warning) << "Playnite helper launch failed: "sv << fec.message() << "; attempting URI fallback"sv;
         } else {
@@ -2110,7 +2120,10 @@ namespace proc {
         } catch (...) {}
         std::error_code fec;
         boost::filesystem::path wd;  // empty wd
-        _process = platf::run_command(false, true, cmd, wd, _env, _pipe.get(), fec, &_process_group);
+        {
+          std::lock_guard running_state_lock(_running_state_mutex);
+          _process = platf::run_command(false, true, cmd, wd, _env, _pipe.get(), fec, &_process_group);
+        }
         if (fec) {
           BOOST_LOG(warning) << "Playnite fullscreen helper launch failed: "sv << fec.message();
         } else {
@@ -2157,7 +2170,10 @@ namespace proc {
       }
 #endif
       BOOST_LOG(info) << "Executing: ["sv << _app.cmd << "] in ["sv << working_dir << ']';
-      _process = platf::run_command(_app.elevated, true, _app.cmd, working_dir, _env, _pipe.get(), ec, &_process_group);
+      {
+        std::lock_guard running_state_lock(_running_state_mutex);
+        _process = platf::run_command(_app.elevated, true, _app.cmd, working_dir, _env, _pipe.get(), ec, &_process_group);
+      }
       if (ec) {
         BOOST_LOG(warning) << "Couldn't run ["sv << _app.cmd << "]: System: "sv << ec.message();
         return -1;
@@ -2431,6 +2447,7 @@ namespace proc {
 
   bool proc_t::foreground_window_matches_running_app() {
 #ifdef _WIN32
+    std::lock_guard running_state_lock(_running_state_mutex);
     if (!has_trackable_running_app()) {
       return false;
     }
@@ -2459,6 +2476,7 @@ namespace proc {
 
 #ifdef _WIN32
   bool proc_t::running_app_contains_pid(uint32_t pid) {
+    std::lock_guard running_state_lock(_running_state_mutex);
     if (!has_trackable_running_app() || pid == 0) {
       return false;
     }
@@ -2479,6 +2497,7 @@ namespace proc {
   }
 
   running_app_state_t proc_t::running_app_state() const {
+    std::lock_guard running_state_lock(_running_state_mutex);
     running_app_state_t state;
     state.has_active_app = _app_id > 0;
     if (!state.has_active_app) {
@@ -2490,6 +2509,7 @@ namespace proc {
     state.playnite_id = _app.playnite_id;
     state.name = _app.name;
     state.command = _app.cmd;
+    state.has_detached_commands = !_app.detached.empty();
     state.working_dir = _app.working_dir;
 
     try {
@@ -2569,8 +2589,11 @@ namespace proc {
 #endif
     // Regardless, ensure process group is terminated (graceful then forceful with remaining timeout)
     terminate_process_group(_process, _process_group, remaining_timeout);
-    _process = bp::child();
-    _process_group = bp::group();
+    {
+      std::lock_guard running_state_lock(_running_state_mutex);
+      _process = bp::child();
+      _process_group = bp::group();
+    }
 
     _env["APOLLO_APP_STATUS"] = "TERMINATING";
 
@@ -2697,9 +2720,12 @@ namespace proc {
 
     _active_client_uuid.clear();
     _app_launch_time = {};
-    _app_id = -1;
+    {
+      std::lock_guard running_state_lock(_running_state_mutex);
+      _app_id = -1;
+      _app = {};
+    }
     _app_name.clear();
-    _app = {};
     display_name.clear();
     initial_display.clear();
     _launch_session.reset();

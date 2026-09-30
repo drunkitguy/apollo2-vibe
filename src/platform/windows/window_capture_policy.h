@@ -85,18 +85,53 @@ namespace platf::dxgi::window_policy {
     return launch_time != 0 && process_created > launch_time;
   }
 
+  /**
+   * @brief How the running app's windows are recognized.
+   */
+  enum class selection_mode_e : std::uint8_t {
+    app_matcher,  ///< Windows of the tracked app, plus windows of processes started after the launch.
+    launched_app,  ///< The app has a command but cannot be tracked (URL or detached launch): only windows of processes started after the launch.
+    desktop,  ///< No app command (the Desktop app, or nothing running): follow the foreground window.
+  };
+
+  /**
+   * @brief Pick the selection mode for the running app.
+   * @param has_active_app An app session is active.
+   * @param launches_process The app starts something: a command, detached commands, a Playnite game,
+   * or any tracked process. The command-less Desktop app launches nothing.
+   * @param have_app_matcher The app's own processes or install directory can be recognized.
+   */
+  constexpr selection_mode_e selection_mode_for(
+    const bool has_active_app,
+    const bool launches_process,
+    const bool have_app_matcher
+  ) noexcept {
+    if (!has_active_app || !launches_process) {
+      return selection_mode_e::desktop;
+    }
+    return have_app_matcher ? selection_mode_e::app_matcher : selection_mode_e::launched_app;
+  }
+
   namespace detail {
     constexpr std::uintptr_t choose_among(
       const std::span<const window_candidate_t> candidates,
       const std::uintptr_t current,
-      const bool have_app_matcher,
+      const selection_mode_e mode,
       const bool iconic
     ) noexcept {
       const auto eligible = [&](const window_candidate_t &c) {
         if (c.id == 0 || c.iconic != iconic) {
           return false;
         }
-        return !have_app_matcher || c.matches_app || c.started_after_launch;
+        switch (mode) {
+          case selection_mode_e::app_matcher:
+            return c.matches_app || c.started_after_launch;
+          case selection_mode_e::launched_app:
+            return c.started_after_launch;
+          case selection_mode_e::desktop:
+            return true;
+        }
+        return false;
       };
 
       for (const auto &c : candidates) {
@@ -111,7 +146,7 @@ namespace platf::dxgi::window_policy {
           }
         }
       }
-      if (!have_app_matcher) {
+      if (mode == selection_mode_e::desktop) {
         return 0;
       }
 
@@ -129,21 +164,93 @@ namespace platf::dxgi::window_policy {
   /**
    * @brief Pick the window to capture, or 0 for none (the stream shows black).
    *
-   * With an app matcher only matching windows and windows of processes started after
-   * the launch are eligible: foreground first, then the current target, then the
-   * largest client area. Without a matcher the foreground window is followed and the
-   * current target kept while it remains a candidate. Minimized windows are only
-   * picked when no other window qualifies.
+   * In the app modes only eligible windows (see selection_mode_e) are considered:
+   * foreground first, then the current target, then the largest client area. Windows
+   * that existed before the launch and do not belong to the app are never chosen. In
+   * desktop mode the foreground window is followed and the current target kept while it
+   * remains a candidate. Minimized windows are only picked when nothing else qualifies.
    */
   constexpr std::uintptr_t choose_target(
     const std::span<const window_candidate_t> candidates,
     const std::uintptr_t current,
-    const bool have_app_matcher
+    const selection_mode_e mode
   ) noexcept {
-    if (const auto id = detail::choose_among(candidates, current, have_app_matcher, false); id != 0) {
+    if (const auto id = detail::choose_among(candidates, current, mode, false); id != 0) {
       return id;
     }
-    return detail::choose_among(candidates, current, have_app_matcher, true);
+    return detail::choose_among(candidates, current, mode, true);
+  }
+
+  enum class placement_action_e : std::uint8_t {
+    none,  ///< Leave the window alone.
+    restore,  ///< Restore a minimized or maximized window first, then plan again.
+    set_rect,  ///< Move or resize the window to `window`.
+  };
+
+  struct placement_t {
+    placement_action_e action;
+    rect_i window;
+  };
+
+  /**
+   * @brief Decide how to place the target so its client area fills the capture output.
+   *
+   * A window whose client area already covers the output (borderless fullscreen) is never
+   * touched. A resizable window is sized so that its client area matches the output exactly;
+   * its title bar and borders then lie outside the output, so no taskbar strip or frame is
+   * left in the stream. A fixed-size window is only moved, client area first, when its client
+   * area is not already inside the output.
+   * @param output Capture display rectangle in desktop coordinates.
+   * @param window_rect GetWindowRect of the window.
+   * @param client_screen Client rectangle of the window in desktop coordinates.
+   */
+  constexpr placement_t plan_placement(
+    const rect_i output,
+    const rect_i window_rect,
+    const rect_i client_screen,
+    const bool resizable,
+    const bool iconic,
+    const bool zoomed
+  ) noexcept {
+    const placement_t leave {placement_action_e::none, window_rect};
+    if (iconic) {
+      return {placement_action_e::restore, window_rect};
+    }
+    if (client_screen.right <= client_screen.left || client_screen.bottom <= client_screen.top) {
+      return leave;
+    }
+
+    const bool covers = client_screen.left <= output.left && client_screen.top <= output.top &&
+                        client_screen.right >= output.right && client_screen.bottom >= output.bottom;
+    if (covers) {
+      return leave;
+    }
+    if (zoomed && resizable) {
+      return {placement_action_e::restore, window_rect};
+    }
+
+    const std::int32_t inset_left = client_screen.left - window_rect.left;
+    const std::int32_t inset_top = client_screen.top - window_rect.top;
+    const std::int32_t inset_right = window_rect.right - client_screen.right;
+    const std::int32_t inset_bottom = window_rect.bottom - client_screen.bottom;
+    if (resizable) {
+      return {
+        placement_action_e::set_rect,
+        {output.left - inset_left, output.top - inset_top, output.right + inset_right, output.bottom + inset_bottom},
+      };
+    }
+
+    const bool inside = client_screen.left >= output.left && client_screen.top >= output.top &&
+                        client_screen.right <= output.right && client_screen.bottom <= output.bottom;
+    if (inside) {
+      return leave;
+    }
+    const std::int32_t left = output.left - inset_left;
+    const std::int32_t top = output.top - inset_top;
+    return {
+      placement_action_e::set_rect,
+      {left, top, left + (window_rect.right - window_rect.left), top + (window_rect.bottom - window_rect.top)},
+    };
   }
 
   struct target_debouncer_t {
