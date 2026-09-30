@@ -96,7 +96,7 @@ All paths are relative to the repository root. Line numbers refer to commit `090
 
 `src/platform/windows/display_base.cpp`, `platf::display()` (line 1704): compute
 `const bool prefer_wgc_backend = config.window_only || (!user_requested_ddx && (wgc_requested || default_to_wgc));`
-If WGC creation fails in a window-only session, log a warning and keep the existing fall-through to DDX so the stream still starts. The secure-desktop fallback inside `display_wgc_ipc_vram_t::create()` stays as is.
+If WGC creation fails in a window-only session, log an error and return `nullptr` without falling through to DDX, because DDX would show the desktop. The stream then fails to start and the user can turn the client toggle off. The secure-desktop fallback inside `display_wgc_ipc_vram_t::create()` stays as is (UAC and lock screen only, see 2.3).
 
 ### 5.3 Pure policy header (unit-testable on Linux)
 
@@ -109,7 +109,7 @@ New file `src/platform/windows/window_capture_policy.h`, namespace `platf::dxgi:
   - `frame_bounds` is `DWMWA_EXTENDED_FRAME_BOUNDS` of the window (the WGC surface origin; not `GetWindowRect`, which includes the invisible resize border, as thorstream measured).
   - `client_screen` is the client rectangle in screen coordinates (`GetClientRect` plus `ClientToScreen`).
   - Source rectangle = `client_screen` shifted by `-frame_bounds.left/top`, clamped to `[0, content_w) x [0, content_h)`. Destination = the matching part of `client_screen` shifted by `-output.left/top`, then both clipped against `[0, output width) x [0, output height)` with the source adjusted by the same amount. `empty` when the result has no area. `covers_output` when the destination is `(0,0)` and the size equals the output size.
-- `struct window_candidate_t { std::uintptr_t id; bool matches_app; bool is_foreground; bool iconic; std::int64_t client_area; };`
+- `struct window_candidate_t { std::uintptr_t id; bool matches_app; bool started_after_launch; bool is_foreground; bool iconic; std::int64_t client_area; };`
 - `constexpr std::uintptr_t choose_target(std::span<const window_candidate_t>, std::uintptr_t current, bool have_app_matcher);` implementing section 5.5's rules.
 - `struct target_debouncer_t { std::uintptr_t pending; int stable_polls; std::uintptr_t committed; bool observe(std::uintptr_t candidate, int polls_required); };` returns true when `committed` changes.
 
@@ -151,9 +151,10 @@ New files `src/platform/windows/window_target.h` and `window_target.cpp`, added 
    and make `snapshot()` call it, so behaviour there is unchanged. Also export `bool is_desktop_ui_window(HWND hwnd, std::string_view executable);` wrapping the existing internal checks (`GetDesktopWindow`, `GetShellWindow`, `foreground_window_is_windows_shell()` line 68, `process_is_windows_desktop_ui()` line 312).
 2. `std::vector<window_policy::window_candidate_t> enumerate_candidates(...)`: `EnumWindows` over top-level windows keeping those that are visible, not cloaked (`DWMWA_CLOAKED`), root (`GetAncestor(GA_ROOT) == hwnd`), not `WS_EX_TOOLWINDOW`, not owned (`GetWindow(GW_OWNER) == nullptr`) unless it is the foreground window, client area at least 64x64, and not desktop UI. Mark `matches_app` with the matcher, `is_foreground` against `GetForegroundWindow()`, and `iconic` with `IsIconic`.
 3. Selection rules (implemented in `window_policy::choose_target()`):
-   - If an app matcher exists and at least one candidate matches: the foreground window if it matches; else the current target if it still matches; else the matching window with the largest client area (ties broken by Z order, which is `EnumWindows` order).
-   - Otherwise (no matcher, which covers the "Desktop" app and apps started through URLs such as `steam://` whose launcher process exits and auto-detaches, or a matcher with no window yet): follow the foreground window if it is a valid non-shell candidate; else keep the current target if still valid; else none (black).
+   - If an app matcher exists: eligible windows are those that match, plus those whose process was created after the session's launch time (`GetProcessTimes`, fills `started_after_launch`; this catches games a launcher starts outside the job object). Pick the foreground window if eligible; else the current target if still eligible; else the eligible window with the largest client area (ties broken by Z order, which is `EnumWindows` order); else none (black). Windows that existed before the launch and do not match are never chosen, so the stream stays black while the app is starting.
+   - If no matcher exists (the "Desktop" app, or apps started through URLs such as `steam://` whose launcher process exits and auto-detaches): follow the foreground window if it is a valid non-shell candidate; else keep the current target if still valid; else none (black).
    - Minimized candidates are only chosen if nothing else qualifies.
+   - Launch time: add `void mark_launch()` and `FILETIME launch_time()` (atomic 64-bit storage) to `window_target`, and call `mark_launch()` at the start of `proc::proc_t::execute()` in `src/process.cpp` under `#ifdef _WIN32`. A candidate is `started_after_launch` when its process creation time is later than `launch_time()` and `launch_time()` is non-zero.
 4. `class tracker_t`: constructed with the capture display rectangle (`captured_output_desc.DesktopCoordinates`). Owns a `std::jthread` that calls `syncThreadDesktop()` (`misc.cpp:489`) once, then every 250 ms enumerates, chooses, and feeds `target_debouncer_t` with `polls_required = 3`. Exposes `std::uintptr_t select_now()` (synchronous, used at display init) and `std::uintptr_t committed_target() const` (atomic read). Logs each committed change at info level with pid, executable base name and window class (no titles, to avoid logging document names).
 5. `void prepare_target(HWND hwnd, const RECT &output)`, called once per newly committed target:
    - If the window's `DWMWA_EXTENDED_FRAME_BOUNDS` is not fully inside `output`, `ShowWindow(SW_RESTORE)` if maximized elsewhere, then `SetWindowPos` its top-left to `output.left/top` with `SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE`.
@@ -196,14 +197,14 @@ Paths below are inside `clients/android/`.
 1. `app/build.gradle`
    - Flavor `nonRoot_game` (line 59): `applicationId "app.vibewindow.client"`; flavor `root` (line 43): `applicationId "app.vibewindow.client.root"`. Replace the `nonRoot_game` `obtainium_app_url` with the same neutral `data:` URL the root flavor uses.
    - `release` build type (lines 137 to 140): remove `applicationIdSuffix ".noir"`; set `app_label` to "Vibe Window", `app_label_root` to "Vibe Window (Root)", `app_label_game` to "Vibe Window (Game)"; add `signingConfig signingConfigs.ci`. `debug` build type (lines 98 to 101): suffix `.debug`, labels "Vibe Window Debug". These changes also satisfy the upstream comment asking forks to change the application id.
-   - `defaultConfig` (lines 14 and 15): `versionName (project.findProperty('windowClientVersionName') ?: "1.0.0")` and `versionCode ((project.findProperty('windowClientVersionCode') ?: "1") as int)`.
+   - `defaultConfig` (lines 14 and 15): `versionName (project.findProperty('windowClientVersionName') ?: "1.0.0")` and `versionCode Integer.parseInt((project.findProperty('windowClientVersionCode') ?: "1").toString())`. Do not use Groovy `as int` on a String, which turns a one-character string into its character code.
    - Add `ndk { abiFilters 'arm64-v8a' }` to `defaultConfig` and set `splits.abi.enable false` (line 155). The Thor is arm64; this cuts NDK build time about four times and yields one APK.
-   - Add a `signingConfigs { ci { ... } }` block: `storeFile` from env `WINDOW_CLIENT_KEYSTORE` or default `file("${rootDir}/signing/window-client-ci.p12")`, passwords and alias from env `WINDOW_CLIENT_KEYSTORE_PASSWORD` and `WINDOW_CLIENT_KEY_ALIAS` with public defaults, `storeType "pkcs12"`.
+   - Add a `signingConfigs { ci { ... } }` block: `storeFile file("${rootDir}/signing/window-client-ci.p12")`, `storePassword` and `keyPassword` "vibewindow-public", `keyAlias` "vibewindow", `storeType "pkcs12"`. No secrets override in this version.
    - In the `lint {}` block add `checkReleaseBuilds false` and `abortOnError false`, because the fork was only ever built in debug and lint-vital must not block a release.
    - Leave `ndkVersion "27.0.12077973"` as upstream pins it; CI installs it.
 2. `signing/window-client-ci.p12`: generate once, locally, with
    `keytool -genkeypair -keystore window-client-ci.p12 -storetype PKCS12 -alias vibewindow -keyalg RSA -keysize 3072 -validity 10000 -storepass vibewindow-public -keypass vibewindow-public -dname "CN=Vibe Window CI"`.
-   The DN contains no personal data. This key is public on purpose so every CI build has the same signature and new releases install as updates over old ones without a secret having to be configured. If repository secrets `WINDOW_CLIENT_KEYSTORE_BASE64` and `WINDOW_CLIENT_KEYSTORE_PASSWORD` exist, the workflow uses them instead (see section 7).
+   The DN contains no personal data. This key is public on purpose so every CI build has the same signature and new releases install as updates over old ones without a secret having to be configured (this session cannot set repository secrets). Verify with `git check-ignore -v` that the `.p12` is not ignored.
 3. Defaults (fresh install, and the new application id means a fresh preferences store):
    - `app/src/main/java/com/limelight/preferences/PreferenceConfiguration.java`: `DEFAULT_RESOLUTION = "1920x1080"` (line 137), `DEFAULT_FPS = "120"` (line 138), `DEFAULT_USE_VIRTUAL_DISPLAY = true` (line 141).
    - `app/src/main/res/xml/preferences.xml`: `android:defaultValue="1920x1080"` for `list_resolution` (line 13), `"120"` for `list_fps` (line 21), `"true"` for `checkbox_use_virtual_display` (line 81). `PcView` applies these via `PreferenceManager.setDefaultValues()`.
@@ -218,42 +219,41 @@ Paths below are inside `clients/android/`.
    - `NvHTTP.java`: append `"&windowOnly=" + (context.streamConfig.getWindowOnly() ? 1 : 0)` after the `virtualDisplay` parameter (line 887). This covers both `launch` and `resume`.
 5. No changes to the renderer, input, or JNI code.
 
-## 7. CI workflow for the APK
+## 7. CI workflow for the APK and the host installer
 
-New file `.github/workflows/android-window-client.yml`. It is independent of `ci.yml`. The client tags use the prefix `window-client-v`, which `ci.yml`'s release gate regex (`^v?[0-9]+\.[0-9]+\.[0-9]+...`) does not match, so pushing such a tag never triggers a host release.
+This session can only push to branch `claude/clever-clarke-k7hhhj`. Tag pushes may be refused and `workflow_dispatch` only works for workflows that exist on the default branch, so the release must be created from a normal branch push. The APK is useless without the patched host, so the same release also carries the host MSI.
 
-- `name: Android window client`
-- Triggers:
-  - `push` on all branches with `paths: [clients/android/**, .github/workflows/android-window-client.yml]` (build and upload an artifact only).
-  - `push` of tags `window-client-v*` (build and publish a release; GitHub does not evaluate path filters for tag pushes).
-  - `pull_request` with the same paths (build only).
-  - `workflow_dispatch` with optional input `release_tag` (blank means artifact only). Manual dispatch is available once the workflow file exists on the default branch.
-- Top-level `permissions: {}`; `concurrency: { group: android-window-client-${{ github.ref }}, cancel-in-progress: true }`.
-- Job `build` on `ubuntu-latest`, `permissions: contents: read`, `defaults.run.working-directory: clients/android`, `timeout-minutes: 60`:
-  1. `actions/checkout` (pin to the same SHA `ci.yml` uses for v6.0.2), no submodules needed.
-  2. `actions/setup-java@v4` with `distribution: temurin`, `java-version: '17'` (AGP 8.13 needs JDK 17; the client compiles Java 11 source), `cache: gradle`, `cache-dependency-path: clients/android/**/*.gradle*`.
-  3. `android-actions/setup-android@v3`.
-  4. `sdkmanager --install "ndk;27.0.12077973"` (the runner ships 27.3, 28.2 and 29.0 only; installing the exact pin keeps upstream's native build byte-for-byte reproducible).
-  5. Signing: if `secrets.WINDOW_CLIENT_KEYSTORE_BASE64` is non-empty, decode it to `$RUNNER_TEMP/release.p12` and export `WINDOW_CLIENT_KEYSTORE`, `WINDOW_CLIENT_KEYSTORE_PASSWORD`, `WINDOW_CLIENT_KEY_ALIAS` via `$GITHUB_ENV`; otherwise the committed public key is used.
-  6. Version: `VERSION_NAME` = tag without the `window-client-v` prefix for tag builds, the `release_tag` input without prefix for manual releases, otherwise `0.0.${{ github.run_number }}-dev`. `VERSION_CODE = 1000 + github.run_number` (monotonic, so updates always install).
-  7. `chmod +x gradlew && ./gradlew :app:assembleNonRoot_gameRelease --no-daemon --stacktrace -PwindowClientVersionName=$VERSION_NAME -PwindowClientVersionCode=$VERSION_CODE`.
-  8. Copy `app/build/outputs/apk/nonRoot_game/release/*.apk` to `dist/VibeWindow-$VERSION_NAME-arm64-v8a.apk`; run `$ANDROID_HOME/build-tools/35.0.0/apksigner verify --print-certs` on it (fails the job if unsigned) and write `dist/*.sha256` with `sha256sum`.
-  9. `actions/upload-artifact@v4` named `vibe-window-apk` with `dist/*`, `if-no-files-found: error`.
-- Job `release`, `needs: build`, `if: startsWith(github.ref, 'refs/tags/window-client-v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')`, `permissions: contents: write`:
-  1. `actions/download-artifact@v4` into `dist`.
-  2. `softprops/action-gh-release@v2` with `tag_name` (the pushed tag or the input), `target_commitish: ${{ github.sha }}`, `name: Vibe Window <version>`, `files: dist/*`, `fail_on_unmatched_files: true`, `make_latest: false` (so host Vibepollo releases, if any are published later, stay "latest"), `generate_release_notes: false`, and a fixed `body` describing: what the app is, that it needs this host build, install steps for the Thor (sideload the arm64 APK), the window-only toggle, and a line that source is in `clients/android/` under GPL-3.0. No names, emails or handles in the body.
+New file `.github/workflows/window-only-release.yml`, independent of `ci.yml`. The release tag prefix `window-client-v` does not match `ci.yml`'s release gate regex, so it never triggers a host SignPath release.
 
-How to publish the first release: push the branch, confirm the build job is green, then push tag `window-client-v1.0.0` pointing at that commit (or merge to `vibepollo-base` and use manual dispatch with `release_tag: window-client-v1.0.0`).
+- `name: Window-only release`
+- Triggers: `push` to branches `claude/clever-clarke-k7hhhj` and `vibepollo-base` with `paths: [clients/android/**, src/**, tools/**, tests/**, cmake/**, .github/workflows/window-only-release.yml]`. No `pull_request` trigger.
+- Top-level `permissions: {}`; `concurrency: { group: window-only-release-${{ github.ref }}, cancel-in-progress: true }`.
+- Version: `clients/android/VERSION` holds one line, for example `1.0.0`. Tag is `window-client-v<VERSION>`.
+- Job `android` on `ubuntu-latest`, `permissions: contents: read`, `defaults.run.working-directory: clients/android`, `timeout-minutes: 60`:
+  1. `actions/checkout` (same SHA `ci.yml` pins for v6.0.2).
+  2. `actions/setup-java@v4`, `temurin`, `'17'`, `cache: gradle`, `cache-dependency-path: clients/android/**/*.gradle*`.
+  3. `android-actions/setup-android@v3`, then `sdkmanager --install "ndk;27.0.12077973"`.
+  4. `VERSION_NAME=$(cat VERSION)`, `VERSION_CODE=$((1000 + GITHUB_RUN_NUMBER))`.
+  5. `chmod +x gradlew && ./gradlew :app:assembleNonRoot_gameRelease --no-daemon --stacktrace -PwindowClientVersionName=$VERSION_NAME -PwindowClientVersionCode=$VERSION_CODE`.
+  6. Copy the APK to `dist/VibeWindow-$VERSION_NAME-arm64-v8a.apk`. Locate apksigner with `ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1` and run `apksigner verify --print-certs` (fails the job if unsigned). Write `dist/*.sha256`.
+  7. `actions/upload-artifact@v4` named `vibe-window-apk`, `if-no-files-found: error`.
+- Job `windows`: `uses: ./.github/workflows/ci-windows.yml` exactly as `ci.yml`'s `build-windows` calls it, with `build_only: false`, `build_tests: true`, `release_commit: ${{ github.sha }}`, `release_version: 0.0.0`, `release_artifact_retention_days: 7`, `symbol_product_name: Vibepollo`, `symbol_release_prefix: polo`, `publish_symbols: false`, `require_truehdr_runtime: false`, `permissions: actions: read, contents: read`, and no secrets. This compiles the host, the helper and the unit tests (including `test_component_window_capture_policy`) and uploads `unsigned-msi-Windows`.
+- Job `release`, `needs: [android, windows]`, `permissions: contents: write`:
+  1. Checkout, read `VERSION`, and skip the remaining steps if `gh release view window-client-v$VERSION` succeeds (`GH_TOKEN: ${{ github.token }}`), so re-pushes do not fail.
+  2. `actions/download-artifact@v4` for `vibe-window-apk` and `unsigned-msi-Windows` into `dist`. Rename the MSI to `Vibepollo-WindowOnly-$VERSION.msi` and add its `.sha256`.
+  3. `softprops/action-gh-release@v2` with `tag_name: window-client-v$VERSION`, `target_commitish: ${{ github.sha }}`, `name: Vibe Window $VERSION`, `files: dist/*`, `fail_on_unmatched_files: true`, `make_latest: true`, `generate_release_notes: false`, and a fixed `body`: what it is, install the MSI on the Windows PC first (unsigned, so SmartScreen asks "More info, Run anyway"), sideload the arm64 APK on the Thor, the window-only toggle, known limitations (popups, exclusive fullscreen, UAC shows the secure desktop), and that source is in this repository under GPL-3.0. No names, emails, handles or local paths.
 
-Host verification in CI: `ci.yml` only builds Windows on `workflow_dispatch` or `pull_request` to `vibe`, `main` or `master` (the default branch `vibepollo-base` is not in that list). Use `workflow_dispatch` on the feature branch with a blank `release_tag` to get a Windows build and tests without releasing. Note the Windows job references secrets (`SYMBOL_TOKEN`, `TRUEHDR_RUNTIME_TOKEN`) that may be absent in the fork; if that fails the build for reasons unrelated to this change, record it and rely on the unit test job plus careful review.
+How to publish the first release: set `clients/android/VERSION` to `1.0.0` and push the branch. If `android` or `windows` fails, fix and push again; the release is created by the first fully green run.
+
+If the `windows` job fails for reasons unrelated to this change (for example a missing secret), record the cause, and publish the APK-only release by temporarily making `release` depend on `android` only, stating in the body that the host build is pending.
 
 ## 8. Acceptance criteria
 
 Build and release:
 
-1. `.github/workflows/android-window-client.yml` build job succeeds on the feature branch and uploads `VibeWindow-<ver>-arm64-v8a.apk`.
-2. A GitHub Release tagged `window-client-v1.0.0` exists in `drunkitguy/apollo2-vibe`, is public, contains the APK and its `.sha256`, and `apksigner verify` passed in the log.
-3. The Windows host build (via `ci.yml` dispatch) compiles `sunshine`, `sunshine_wgc_capture` and the tests, or any failure is shown to be unrelated to this change.
+1. `.github/workflows/window-only-release.yml` `android` and `windows` jobs succeed on the feature branch.
+2. A GitHub Release tagged `window-client-v1.0.0` exists in `drunkitguy/apollo2-vibe`, is public, contains the APK, the host MSI and their `.sha256` files, and `apksigner verify` passed in the log.
+3. The `windows` job compiles `sunshine`, `sunshine_wgc_capture` and the tests.
 4. `test_component_window_capture_policy` and the updated `RtspStartupSnapshot` test pass.
 
 Client behaviour (verifiable from code and on device):
@@ -283,7 +283,7 @@ Host behaviour (manual test on the user's PC, since CI cannot run a GPU session)
 | Menus and popups not visible for desktop apps. | Documented; games are the target use. Follow-up: composite owned popups as extra WGC items. |
 | Exclusive-fullscreen games deliver no window frames. | Documented; ask the user to use borderless. Follow-up: fall back to display capture when `fullscreen_detector` reports exclusive D3D fullscreen. |
 | Yellow capture border drawn on the host monitor on some Windows builds. | `IsBorderRequired(false)` is already attempted. The border is never part of the captured frame, so the stream is unaffected. |
-| Publicly known signing key allows a third party to build an APK that installs over this one. | Only matters for APKs obtained elsewhere; documented in `UPSTREAM.txt` and the workflow. Secrets override supported. |
+| Publicly known signing key allows a third party to build an APK that installs over this one. | Only matters for APKs obtained elsewhere; documented in `UPSTREAM.txt`. A private key via repository secrets is a follow-up. |
 | Jitpack or Maven outages break the Android build. | Gradle cache in `setup-java`; rerun. |
 | Release-type build trips lint or R8 issues never seen in the fork's debug builds. | Lint made non-blocking; the fork's `proguard-rules.pro` is the same one upstream uses for its release builds. If R8 still fails, fall back to `assembleNonRoot_gameDebug` with the same signing config and debug label changes, and note the switch in the release body. |
 | `config_data_t` size change between main and helper. | Both are built together and installed together; the helper already rejects messages of unexpected size. |
