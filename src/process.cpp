@@ -61,6 +61,7 @@
   #include "platform/windows/playnite_integration.h"
   #include "platform/windows/display_helper_request_helpers.h"
   #include "platform/windows/virtual_display_cleanup.h"
+  #include "platform/windows/window_target.h"
   #include "tools/playnite_launcher/focus_utils.h"
   #include "tools/playnite_launcher/lossless_scaling.h"
 
@@ -1248,6 +1249,7 @@ namespace proc {
   }
   int proc_t::execute(const ctx_t &app, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {
 #ifdef _WIN32
+    platf::window_target::mark_launch();
     std::optional<std::filesystem::path> resolved_lossless_exe_path;
     std::string resolved_lossless_exe_utf8;
     _virtual_display_active = false;

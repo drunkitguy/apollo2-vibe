@@ -197,6 +197,7 @@ namespace rtsp_stream {
     snapshot->prefer_sdr_10bit = prefer_sdr_10bit;
     snapshot->force_sdr = force_sdr;
     snapshot->client_vrr_requested = client_vrr_requested;
+    snapshot->window_only = window_only;
     snapshot->perm = perm;
     snapshot->fps = fps;
     // Copied, not moved: the io_context thread still owns the original session.
@@ -1694,6 +1695,7 @@ namespace rtsp_stream {
       }
 
       config.monitor.input_only = session->input_only;
+      config.monitor.window_only = session->window_only;
 
       // Validate that clientRefreshRateX100 is consistent with maxFPS.
       // Some clients send a stale or incorrect clientRefreshRateX100 (e.g. 6000 = 60fps)

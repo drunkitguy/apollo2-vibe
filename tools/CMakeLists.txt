@@ -103,6 +103,7 @@ target_link_libraries(sunshine_wgc_capture
         ${CMAKE_THREAD_LIBS_INIT}
         d3d11
         dxgi
+        dwmapi
         ole32
         user32
         gdi32

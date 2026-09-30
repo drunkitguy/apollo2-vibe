@@ -517,6 +517,56 @@ namespace platf::foreground_app {
     return window_is_transient_shell_overlay(class_name, desktop_ui, covers_capture_display);
   }
 
+  namespace {
+    struct app_match_context_t {
+      std::optional<platf::playnite::active_game_status_t> playnite_status;
+      std::string cached_install_dir;
+    };
+
+    app_match_context_t load_app_match_context(const proc::running_app_state_t &app) {
+      app_match_context_t context;
+      if (app.uses_playnite) {
+        const auto active_games = platf::playnite::get_active_game_statuses();
+        for (auto game = active_games.rbegin(); game != active_games.rend(); ++game) {
+          if (game->active && game->id == app.playnite_id) {
+            context.playnite_status = *game;
+            break;
+          }
+        }
+        platf::playnite::get_cached_install_dir(app.playnite_id, context.cached_install_dir);
+      }
+      return context;
+    }
+
+    active_window_matcher_t make_active_app_matcher(
+      const proc::running_app_state_t &app,
+      const app_match_context_t &context
+    ) {
+      if (app.uses_playnite) {
+        return [playnite_status = context.playnite_status, cached_install_dir = context.cached_install_dir](DWORD, const std::string_view executable) {
+          if (playnite_status &&
+              playnite_foreground_matches_for_tests(
+                {},
+                playnite_status->id,
+                playnite_status->exe,
+                playnite_status->install_dir,
+                executable
+              )) {
+            return true;
+          }
+          return !cached_install_dir.empty() &&
+                 path_is_under_directory(executable, cached_install_dir);
+        };
+      }
+      if (app.trackable) {
+        return [](const DWORD pid, std::string_view) {
+          return proc::proc.running_app_contains_pid(pid);
+        };
+      }
+      return {};
+    }
+  }  // namespace
+
   state_t snapshot(
     const std::optional<RECT> &capture_rect,
     const DWORD game_hint_pid,
@@ -554,44 +604,16 @@ namespace platf::foreground_app {
     state.uses_playnite = app.uses_playnite;
     state.active_app_name = app.name;
 
-    std::optional<platf::playnite::active_game_status_t> playnite_status;
-    std::string cached_install_dir;
-    if (app.uses_playnite) {
-      const auto active_games = platf::playnite::get_active_game_statuses();
-      for (auto game = active_games.rbegin(); game != active_games.rend(); ++game) {
-        if (game->active && game->id == app.playnite_id) {
-          playnite_status = *game;
-          break;
-        }
-      }
-      platf::playnite::get_cached_install_dir(app.playnite_id, cached_install_dir);
-    }
+    const auto match_context = load_app_match_context(app);
+    const auto &playnite_status = match_context.playnite_status;
+    const auto &cached_install_dir = match_context.cached_install_dir;
 
     if (capture_rect) {
       bool require_active_app_match =
         state.has_active_app && (app.uses_playnite || app.trackable);
 
-      active_window_matcher_t matcher;
-      if (app.uses_playnite) {
-        matcher = [playnite_status, cached_install_dir](DWORD, const std::string_view executable) {
-          if (playnite_status &&
-              playnite_foreground_matches_for_tests(
-                {},
-                playnite_status->id,
-                playnite_status->exe,
-                playnite_status->install_dir,
-                executable
-              )) {
-            return true;
-          }
-          return !cached_install_dir.empty() &&
-                 path_is_under_directory(executable, cached_install_dir);
-        };
-      } else if (app.trackable) {
-        matcher = [](const DWORD pid, std::string_view) {
-          return proc::proc.running_app_contains_pid(pid);
-        };
-      } else if (game_hint_pid != 0 || !game_hint_exe.empty()) {
+      active_window_matcher_t matcher = make_active_app_matcher(app, match_context);
+      if (!matcher && (game_hint_pid != 0 || !game_hint_exe.empty())) {
         require_active_app_match = true;
         matcher = [game_hint_pid, game_hint_exe = std::string(game_hint_exe)](
                     const DWORD pid,
@@ -742,6 +764,26 @@ namespace platf::foreground_app {
 
     state.source = "foreground-mismatch";
     return state;
+  }
+
+  std::optional<std::function<bool(DWORD, std::string_view)>> active_app_window_matcher() {
+    const auto app = proc::proc.running_app_state();
+    if (!app.has_active_app) {
+      return std::nullopt;
+    }
+
+    auto matcher = make_active_app_matcher(app, load_app_match_context(app));
+    if (!matcher) {
+      return std::nullopt;
+    }
+    return matcher;
+  }
+
+  bool is_desktop_ui_window(HWND hwnd, std::string_view executable) {
+    return hwnd == GetDesktopWindow() ||
+           hwnd == GetShellWindow() ||
+           foreground_window_is_windows_shell(hwnd) ||
+           process_is_windows_desktop_ui(executable);
   }
 
 }  // namespace platf::foreground_app

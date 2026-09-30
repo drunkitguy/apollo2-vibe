@@ -2111,6 +2111,10 @@ namespace nvhttp {
       launch_session->gcmap = util::from_view(get_arg(args, "gcmap", "0"));
       launch_session->enable_hdr = util::from_view(get_arg(args, "hdrMode", "0"));
       launch_session->client_vrr_requested = util::from_view(get_arg(args, "clientVrrRequested", "0"));
+      launch_session->window_only = util::from_view(get_arg(args, "windowOnly", "0")) != 0;
+      if (launch_session->window_only) {
+        BOOST_LOG(info) << "Client requested window-only capture"sv;
+      }
       launch_session->prefer_sdr_10bit = verified_client->prefer_10bit_sdr;
 #ifdef _WIN32
       {

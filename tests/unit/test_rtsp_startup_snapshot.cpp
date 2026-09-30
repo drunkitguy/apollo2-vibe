@@ -31,6 +31,7 @@ namespace {
     ls.device_name = "device-name";
     ls.perm = crypto::PERM::_all;
     ls.fps = 120;
+    ls.window_only = true;
     ls.client_do_cmds.push_back(crypto::command_entry_t {"do-cmd", true});
     ls.client_undo_cmds.push_back(crypto::command_entry_t {"undo-cmd-1", false});
     ls.client_undo_cmds.push_back(crypto::command_entry_t {"undo-cmd-2", true});
@@ -79,6 +80,7 @@ TEST(RtspStartupSnapshot, CopiesAllConsumedFields) {
   EXPECT_EQ(clone->device_name, source.device_name);
   EXPECT_EQ(clone->perm, source.perm);
   EXPECT_EQ(clone->fps, source.fps);
+  EXPECT_EQ(clone->window_only, source.window_only);
 
   ASSERT_EQ(clone->client_do_cmds.size(), source.client_do_cmds.size());
   EXPECT_EQ(clone->client_do_cmds.front().cmd, "do-cmd");

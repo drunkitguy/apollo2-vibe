@@ -23,6 +23,7 @@
 #include "src/platform/windows/game_activity.h"
 #include "src/platform/windows/misc.h"
 #include "src/platform/windows/virtual_display.h"
+#include "src/platform/windows/window_target.h"
 #include "src/utility.h"
 
 // platform includes
@@ -66,6 +67,16 @@ namespace platf::dxgi {
         return std::nullopt;
       }
 
+      return state;
+    }
+
+    // Window-only sessions may show the secure desktop itself (so UAC prompts can be
+    // answered) but not the regular desktop during the post-switch grace window.
+    std::optional<wgc_dxgi_fallback_state_t> window_only_dxgi_fallback_state(const ::video::config_t &config) {
+      auto state = get_wgc_dxgi_fallback_state();
+      if (state && config.window_only && !state->secure_desktop_active) {
+        return std::nullopt;
+      }
       return state;
     }
 
@@ -187,6 +198,46 @@ namespace platf::dxgi {
       return is_secure_desktop_active();
     }
 
+    // Window-only sessions: pick the target window before the helper starts, so the
+    // helper captures it (or publishes black) from its first frame.
+    std::unique_ptr<window_target::tracker_t> init_window_target(
+      const ::video::config_t &config,
+      const RECT &output,
+      ipc_session_t &ipc_session,
+      std::chrono::steady_clock::time_point &capture_start
+    ) {
+      if (!config.window_only) {
+        return {};
+      }
+
+      auto tracker = std::make_unique<window_target::tracker_t>(output);
+      const auto hwnd = tracker->select_now();
+      if (hwnd != 0) {
+        window_target::prepare_target(reinterpret_cast<HWND>(hwnd), output);
+      }
+      ipc_session.set_window_target(hwnd);
+      capture_start = std::chrono::steady_clock::now();
+      return tracker;
+    }
+
+    // Restarting the helper is the only way to retarget it, so rate-limit restarts.
+    bool window_target_needs_reinit(
+      const std::unique_ptr<window_target::tracker_t> &tracker,
+      const ipc_session_t &ipc_session,
+      const std::chrono::steady_clock::time_point capture_start
+    ) {
+      constexpr auto window_reinit_cooldown = std::chrono::seconds(2);
+      if (!tracker || tracker->committed_target() == ipc_session.window_target()) {
+        return false;
+      }
+      if (std::chrono::steady_clock::now() - capture_start < window_reinit_cooldown) {
+        return false;
+      }
+
+      BOOST_LOG(info) << "Window-only target changed; restarting capture";
+      return true;
+    }
+
     capture_e forward_cached_wgc_frame(std::shared_ptr<platf::img_t> cached_frame, std::shared_ptr<platf::img_t> &img_out) {
       if (!cached_frame) {
         return capture_e::timeout;
@@ -236,6 +287,7 @@ namespace platf::dxgi {
     if (_ipc_session->init(config, display_name, device.get(), advanced_color_capture)) {
       return -1;
     }
+    _window_tracker = init_window_target(config, captured_output_desc.DesktopCoordinates, *_ipc_session, _last_window_reinit);
     game_refresh_target = make_wgc_activity_admission_target(
       *_ipc_session,
       config,
@@ -258,6 +310,10 @@ namespace platf::dxgi {
 
     // Generally this only becomes true if the helper process has crashed or is otherwise not responding.
     if (_ipc_session->should_reinit()) {
+      return capture_e::reinit;
+    }
+
+    if (window_target_needs_reinit(_window_tracker, *_ipc_session, _last_window_reinit)) {
       return capture_e::reinit;
     }
 
@@ -442,10 +498,11 @@ namespace platf::dxgi {
     const std::string &display_name,
     const std::optional<LUID> &required_adapter_luid
   ) {
-    if (auto fallback_state = get_wgc_dxgi_fallback_state()) {
+    if (auto fallback_state = window_only_dxgi_fallback_state(config)) {
       log_wgc_dxgi_fallback_reason("VRAM", *fallback_state);
       adapter_luid_override_guard guard(get_last_wgc_adapter_luid());
       auto disp = std::make_shared<temp_dxgi_vram_t>();
+      disp->set_window_only(config.window_only);
       if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;
       }
@@ -499,6 +556,7 @@ namespace platf::dxgi {
     if (_ipc_session->init(config, display_name, device.get(), advanced_color_capture)) {
       return -1;
     }
+    _window_tracker = init_window_target(config, captured_output_desc.DesktopCoordinates, *_ipc_session, _last_window_reinit);
     game_refresh_target = make_wgc_activity_admission_target(
       *_ipc_session,
       config,
@@ -520,6 +578,10 @@ namespace platf::dxgi {
 
     // If the helper process crashed or was terminated forcefully by the user, we will re-initialize it.
     if (_ipc_session->should_reinit()) {
+      return capture_e::reinit;
+    }
+
+    if (window_target_needs_reinit(_window_tracker, *_ipc_session, _last_window_reinit)) {
       return capture_e::reinit;
     }
 
@@ -675,10 +737,11 @@ namespace platf::dxgi {
     const std::string &display_name,
     const std::optional<LUID> &required_adapter_luid
   ) {
-    if (auto fallback_state = get_wgc_dxgi_fallback_state()) {
+    if (auto fallback_state = window_only_dxgi_fallback_state(config)) {
       log_wgc_dxgi_fallback_reason("RAM", *fallback_state);
       adapter_luid_override_guard guard(get_last_wgc_adapter_luid());
       auto disp = std::make_shared<temp_dxgi_ram_t>();
+      disp->set_window_only(config.window_only);
       if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;
       }
@@ -696,10 +759,11 @@ namespace platf::dxgi {
 
   capture_e temp_dxgi_vram_t::snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) {
     // Check periodically if secure desktop is still active
-    if (auto now = std::chrono::steady_clock::now(); now - _last_check_time >= CHECK_INTERVAL) {
+    const std::chrono::milliseconds check_interval = _window_only ? WINDOW_ONLY_CHECK_INTERVAL : std::chrono::milliseconds(CHECK_INTERVAL);
+    if (auto now = std::chrono::steady_clock::now(); now - _last_check_time >= check_interval) {
       _last_check_time = now;
       const bool secure_desktop_active = platf::dxgi::is_secure_desktop_active();
-      if (!secure_desktop_active && !recent_wgc_desktop_switch_grace_active()) {
+      if (!secure_desktop_active && (_window_only || !recent_wgc_desktop_switch_grace_active())) {
         BOOST_LOG(debug) << "DXGI Capture is no longer necessary, swapping back to WGC!";
         return capture_e::reinit;
       }
@@ -711,10 +775,11 @@ namespace platf::dxgi {
 
   capture_e temp_dxgi_ram_t::snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) {
     // Check periodically if secure desktop is still active
-    if (auto now = std::chrono::steady_clock::now(); now - _last_check_time >= CHECK_INTERVAL) {
+    const std::chrono::milliseconds check_interval = _window_only ? WINDOW_ONLY_CHECK_INTERVAL : std::chrono::milliseconds(CHECK_INTERVAL);
+    if (auto now = std::chrono::steady_clock::now(); now - _last_check_time >= check_interval) {
       _last_check_time = now;
       const bool secure_desktop_active = platf::dxgi::is_secure_desktop_active();
-      if (!secure_desktop_active && !recent_wgc_desktop_switch_grace_active()) {
+      if (!secure_desktop_active && (_window_only || !recent_wgc_desktop_switch_grace_active())) {
         BOOST_LOG(debug) << "DXGI Capture is no longer necessary, swapping back to WGC!";
         return capture_e::reinit;
       }

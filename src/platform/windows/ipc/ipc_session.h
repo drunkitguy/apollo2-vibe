@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <winsock2.h>
 #include <d3d11.h>
 #include <memory>
@@ -142,6 +143,23 @@ namespace platf::dxgi {
     bool set_activity_admission_fps(int fps);
 
     /**
+     * @brief Set the window the helper captures in a window-only session.
+     * Takes effect the next time the helper starts.
+     * @param hwnd Window handle, or `0` to publish black.
+     */
+    void set_window_target(std::uintptr_t hwnd) {
+      _window_target.store(hwnd, std::memory_order_relaxed);
+    }
+
+    /**
+     * @brief Get the window the helper was asked to capture.
+     * @return Window handle, or `0` when none.
+     */
+    std::uintptr_t window_target() const {
+      return _window_target.load(std::memory_order_relaxed);
+    }
+
+    /**
      * @brief Read the static descriptor of the shared texture without acquiring the keyed mutex.
      * The shared texture is created once at session setup and its descriptor never changes for
      * the lifetime of the session, so it is safe to read at any time.
@@ -206,6 +224,7 @@ namespace platf::dxgi {
     std::string _display_name;  ///< Display name copy.
     bool _advanced_color_capture = false;  ///< True when target display is already Advanced Color/HDR.
     std::atomic<int> _activity_admission_fps {0};  ///< Latest desired helper admission rate, retained across helper restarts.
+    std::atomic<std::uintptr_t> _window_target {0};  ///< Window captured in a window-only session.
     std::chrono::steady_clock::time_point _last_helper_stop {};  ///< Last time we tore down the helper.
   };
 

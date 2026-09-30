@@ -34,6 +34,10 @@ namespace platf::game_activity {
   class refresh_target_t;
 }
 
+namespace platf::window_target {
+  class tracker_t;
+}
+
 namespace platf::dxgi {
   extern const char *format_str[];
 
@@ -541,6 +545,8 @@ namespace platf::dxgi {
     std::shared_ptr<platf::img_t> _last_cached_frame;
     std::chrono::steady_clock::time_point _wgc_stall_start {};  ///< Start of the current frame-wait stall (zero when frames are flowing).
     std::chrono::steady_clock::time_point _last_secure_desktop_probe {};  ///< Last secure-desktop probe performed during a stall.
+    std::unique_ptr<window_target::tracker_t> _window_tracker;  ///< Target window tracker in window-only sessions.
+    std::chrono::steady_clock::time_point _last_window_reinit {};  ///< Start of the current window-only capture.
   };
 
   class display_wgc_ipc_ram_t: public display_ram_t {
@@ -643,6 +649,16 @@ namespace platf::dxgi {
      * @brief Last secure-desktop probe performed during a stall.
      */
     std::chrono::steady_clock::time_point _last_secure_desktop_probe {};
+
+    /**
+     * @brief Target window tracker in window-only sessions.
+     */
+    std::unique_ptr<window_target::tracker_t> _window_tracker;
+
+    /**
+     * @brief Start of the current window-only capture.
+     */
+    std::chrono::steady_clock::time_point _last_window_reinit {};
   };
 
   /**
@@ -654,8 +670,14 @@ namespace platf::dxgi {
   private:
     std::chrono::steady_clock::time_point _last_check_time;
     static constexpr std::chrono::seconds CHECK_INTERVAL {2};  // Check every 2 seconds
+    static constexpr std::chrono::milliseconds WINDOW_ONLY_CHECK_INTERVAL {250};
+    bool _window_only = false;  ///< Swap back as soon as the secure desktop closes.
 
   public:
+    void set_window_only(bool window_only) {
+      _window_only = window_only;
+    }
+
     capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) override;
   };
 
@@ -675,7 +697,24 @@ namespace platf::dxgi {
      */
     static constexpr std::chrono::seconds CHECK_INTERVAL {2};
 
+    /**
+     * @brief Interval between secure desktop status checks in window-only sessions.
+     */
+    static constexpr std::chrono::milliseconds WINDOW_ONLY_CHECK_INTERVAL {250};
+
+    /**
+     * @brief Swap back as soon as the secure desktop closes, skipping the desktop-switch grace window.
+     */
+    bool _window_only = false;
+
   public:
+    /**
+     * @brief Mark this fallback as serving a window-only session.
+     */
+    void set_window_only(bool window_only) {
+      _window_only = window_only;
+    }
+
     /**
      * @brief Captures a snapshot of the display using DXGI duplication.
      * This method attempts to capture the current frame from the display, handling secure desktop scenarios.

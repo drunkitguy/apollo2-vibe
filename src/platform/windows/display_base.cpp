@@ -1719,11 +1719,16 @@ namespace platf {
     const bool user_requested_ddx = capture_mode == "ddx";
     const bool default_to_wgc = dxgi::should_use_wgc_default();
     const bool wgc_requested = capture_mode.starts_with("wgc");
-    const bool prefer_wgc_backend = !user_requested_ddx && (wgc_requested || default_to_wgc);
+    const bool prefer_wgc_backend = config.window_only || (!user_requested_ddx && (wgc_requested || default_to_wgc));
 
     if (hwdevice_type == mem_type_e::dxgi) {
       if (prefer_wgc_backend) {
         auto disp = dxgi::display_wgc_ipc_vram_t::create(config, display_name, required_adapter_luid);
+        if (!disp && config.window_only) {
+          // Desktop Duplication would show the whole desktop.
+          BOOST_LOG(error) << "Window-only capture requires Windows Graphics Capture; not falling back to Desktop Duplication"sv;
+          return nullptr;
+        }
         if (disp || wgc_requested) {
           return disp;
         }
@@ -1736,6 +1741,10 @@ namespace platf {
     } else if (hwdevice_type == mem_type_e::system) {
       if (prefer_wgc_backend) {
         auto disp = dxgi::display_wgc_ipc_ram_t::create(config, display_name, required_adapter_luid);
+        if (!disp && config.window_only) {
+          BOOST_LOG(error) << "Window-only capture requires Windows Graphics Capture; not falling back to Desktop Duplication"sv;
+          return nullptr;
+        }
         if (disp || wgc_requested) {
           return disp;
         }

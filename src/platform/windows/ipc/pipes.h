@@ -74,11 +74,13 @@ namespace platf::dxgi {
    * @param initial_frame_buffer_size Initial WGC frame pool buffer count.
    * @param max_frame_buffer_size Maximum WGC frame pool buffer count for adaptive growth.
    * @param flags Bitmask of wgc_ipc_config_flags_e values.
+   * @param target_hwnd Window to capture when WGC_IPC_FLAG_WINDOW_CAPTURE is set; `0` publishes black.
    */
   enum wgc_ipc_config_flags_e : uint32_t {
     WGC_IPC_FLAG_DRAIN_TO_LATEST = 1u << 0,
     WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE = 1u << 1,
     WGC_IPC_FLAG_FORCE_SDR_CAPTURE_FORMAT = 1u << 2,
+    WGC_IPC_FLAG_WINDOW_CAPTURE = 1u << 3,
   };
 
   struct config_data_t {
@@ -93,6 +95,7 @@ namespace platf::dxgi {
     uint32_t max_frame_buffer_size;
     uint32_t flags;
     int32_t activity_admission_fps;
+    uint64_t target_hwnd;
   };
 
   constexpr uint32_t WGC_ACTIVITY_ADMISSION_MESSAGE_MAGIC = 0x57474341;  // "WGCA"

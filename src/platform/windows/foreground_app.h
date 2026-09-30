@@ -7,9 +7,11 @@
 #include "game_activity_policy.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 
 #include <winsock2.h>
 #include <windows.h>
@@ -54,6 +56,18 @@ namespace platf::foreground_app {
     DWORD game_hint_pid = 0,
     std::string_view game_hint_exe = {}
   );
+
+  /**
+   * @brief Build a matcher for windows that belong to the running app.
+   * @return A predicate over (pid, executable path), or `std::nullopt` when no app is running
+   *         or the app cannot be tracked (for example the Desktop app or URL launches).
+   */
+  std::optional<std::function<bool(DWORD, std::string_view)>> active_app_window_matcher();
+
+  /**
+   * @brief True for the desktop, shell and Windows desktop UI windows (taskbar, Start, search).
+   */
+  bool is_desktop_ui_window(HWND hwnd, std::string_view executable);
 
   bool path_equal_or_basename_match(std::string_view lhs, std::string_view rhs);
   bool path_is_under_directory(std::string_view path, std::string_view directory);

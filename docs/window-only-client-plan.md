@@ -4,7 +4,7 @@ Status: plan only. Nothing in this document has been implemented yet.
 
 ## 1. Goal
 
-Stream from a Windows 11 PC running this Vibepollo fork to an AYN Thor (Android, 1920x1080 at 120 Hz primary screen) so that the picture only ever contains the window of the app launched from the client. The Windows desktop, taskbar, wallpaper, notifications and other windows must never appear. The client app defaults to 1920x1080 at 120 FPS, installs next to the stock Artemis app, and is published as a public APK in a GitHub Release of this repository. No personal information may appear in code, commits, the APK or the release.
+Stream from a Windows 11 PC running this Vibepollo fork to an AYN Thor (Android, 1920x1080 at 120 Hz primary screen) so that the picture only ever contains the window of the app launched from the client. The Windows desktop, taskbar, wallpaper, notifications and other windows must never appear. The client app defaults to 1920x1080 at 120 FPS, installs next to the stock Artemis app, and is published as a public APK in a GitHub Release of the separate repository `drunkitguy/vibe-window`; the patched host MSI is released from this repository. No personal information may appear in code, commits, the APK or the release.
 
 ## 2. The key constraint and the decision
 
@@ -12,7 +12,7 @@ A Moonlight or Artemis client cannot make the host capture a single window. It o
 
 ### 2.1 Options considered
 
-**(a) Host-side window capture with Windows Graphics Capture (WGC).** `IGraphicsCaptureItemInterop::CreateForWindow(HWND)` builds a capture item for one top-level window. DWM hands over that window's own surface, so nothing drawn on top of it (other windows, the Start menu, toasts) can leak into the frame. The user's own prior-art project `thorstream` proved this on real hardware: a topmost full-screen magenta window covering the game produced a magenta screenshot but a clean game frame (see `FEASIBILITY.md` in that repo). Vibepollo already runs WGC in a helper process (`tools/sunshine_wgc_capture.cpp`) and only calls `CreateForMonitor` today, so the plumbing (IPC, shared texture, HDR formats, pacing, DXGI fallback on the secure desktop) already exists.
+**(a) Host-side window capture with Windows Graphics Capture (WGC).** `IGraphicsCaptureItemInterop::CreateForWindow(HWND)` builds a capture item for one top-level window. DWM hands over that window's own surface, so nothing drawn on top of it (other windows, the Start menu, toasts) can leak into the frame. This is how OBS and WebRTC window capture work (see sources). Vibepollo already runs WGC in a helper process (`tools/sunshine_wgc_capture.cpp`) and only calls `CreateForMonitor` today, so the plumbing (IPC, shared texture, HDR formats, pacing, DXGI fallback on the secure desktop) already exists.
 
 **(b) Virtual display plus "tidy the desktop".** Vibepollo can already create a virtual display that matches the client (SudoVDA), and can make it the only or primary display. We could add a black wallpaper, hide the taskbar and maximize the game. This is cheap and has zero capture overhead, but the desktop still shows during launch, loading, alt-tab, when the game crashes, and whenever a notification, UAC-less dialog, overlay or other window appears. It does not meet "only the window".
 
@@ -43,7 +43,7 @@ Why the virtual display matters: WGC delivers frames at most at the rate DWM com
 | Input | Unchanged because pixels stay at true desktop positions. Keyboard, relative mouse and gamepad go to the foreground window, so the host focuses the target window when it selects it. |
 | Games that switch windows | The host re-evaluates the target every 250 ms and, after the choice has been stable for 750 ms, restarts WGC capture on the new window through the existing capture reinit path. This costs roughly 0.5 to 1.5 s of frozen picture per switch (launcher to game, game to crash dialog). An in-place retarget is a follow-up. |
 | Launchers and popups | Only the chosen top-level window is captured. Context menus, combo-box dropdowns and other separate top-level popups of that app are not visible. Games are rarely affected; desktop apps and launchers can be. The client has a toggle to turn window-only off. |
-| Exclusive fullscreen | Legacy exclusive-fullscreen games may produce no WGC window frames. Borderless fullscreen is confirmed working (thorstream). Documented limitation. |
+| Exclusive fullscreen | Legacy exclusive-fullscreen games may produce no WGC window frames. Borderless fullscreen works with WGC window capture. Documented limitation. |
 | UAC and lock screen | The existing secure-desktop logic swaps to DXGI duplication, which shows the secure desktop (dimmed desktop plus prompt). That is intentional so the user can answer the prompt. Capture returns to window mode afterwards via the normal reinit. |
 | Audio | Still the whole system mix. Per-process loopback is a follow-up. |
 
@@ -59,16 +59,14 @@ Why the virtual display matters: WGC delivers frames at most at the rate DWM com
 - WebRTC WGC window source, production use of `CreateForWindow`: https://webrtc.googlesource.com/src/+/main/modules/desktop_capture/win/wgc_capture_source.cc
 - OBS WinRT capture (window capture via WGC, border and cursor toggles): https://git.tjdev.de/mirror/obs-studio/src/commit/ee144377dc50b5d9f1fdf0598cea56f7e34eab9b/libobs-winrt/winrt-capture.cpp
 - Vibepollo upstream release notes (WGC improvements, virtual display behaviour; no window capture target exists upstream): https://newreleases.io/project/github/Nonary/Vibepollo/release/v1.18.3 and https://newreleases.io/project/github/Nonary/Vibepollo/release/v1.18.0
-- Prior art by the same owner: https://github.com/drunkitguy/thorstream (`FEASIBILITY.md`, `host/src/window_capture.cpp` `ComputeCrop()`, `host/src/window_list.cpp`, `host/src/session.cpp` window placement)
-- Client base: https://github.com/drunkitguy/artemis-apollo2 at `4d5eb3b`, a fork of https://github.com/ClassicOldSong/moonlight-android
-- Client protocol library: https://github.com/drunkitguy/moonlight-common-c-apollo2 at `5efdcee` (adds 0x3003), fork of https://github.com/ClassicOldSong/moonlight-common-c; nested `enet` from https://github.com/cgutman/enet at `115a10b`
+- Client base: upstream Artemis https://github.com/ClassicOldSong/moonlight-android at `c5cf27f4dc822db0e863c4691e7a70c74bea977a` (GPL-3.0), with submodule https://github.com/ClassicOldSong/moonlight-common-c at `c999436858471dfefa7617af3b7dc03ec1644ce4` (nested `enet` submodule).
 - GitHub runner image contents (Android SDK, NDK 27.3/28.2/29.0 installed, JDK 17 default): https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md
 - Release action: https://github.com/softprops/action-gh-release ; SDK setup: https://github.com/android-actions/setup-android
-- Local code read for this plan: `src/nvhttp.cpp`, `src/rtsp.h`, `src/rtsp.cpp`, `src/video.h`, `src/video.cpp`, `src/input.cpp`, `src/process.cpp`, `src/platform/windows/display_base.cpp`, `display_wgc.cpp`, `foreground_app.cpp`, `ipc/pipes.h`, `ipc/ipc_session.cpp`, `tools/sunshine_wgc_capture.cpp`, `tools/playnite_launcher/focus_utils.cpp`, and in the client `NvHTTP.java`, `StreamConfiguration.java`, `PreferenceConfiguration.java`, `StreamSettings.java`, `Game.java`, `AppView.java`, `app/build.gradle`.
+- Local code read for this plan: `src/nvhttp.cpp`, `src/rtsp.h`, `src/rtsp.cpp`, `src/video.h`, `src/video.cpp`, `src/input.cpp`, `src/process.cpp`, `src/platform/windows/display_base.cpp`, `display_wgc.cpp`, `foreground_app.cpp`, `ipc/pipes.h`, `ipc/ipc_session.cpp`, `tools/sunshine_wgc_capture.cpp`, `tools/playnite_launcher/focus_utils.cpp`, and in upstream Artemis `NvHTTP.java`, `StreamConfiguration.java`, `PreferenceConfiguration.java`, `StreamSettings.java`, `Game.java`, `AppView.java`, `ServerHelper.java`, `preferences.xml`, `strings.xml`, `app/build.gradle`, and moonlight-common-c `src/ControlStream.c`.
 
 ## 4. Protocol: the `windowOnly` launch flag
 
-Moonlight-family clients start and resume streams with HTTPS GET `/launch` or `/resume` and a query string. Artemis builds it in `NvHTTP.launchApp()` (client `app/src/main/java/com/limelight/nvstream/http/NvHTTP.java`, around line 880), and already sends Apollo extensions such as `virtualDisplay=` and `scaleFactor=`. The host reads these in `make_launch_session_from_snapshot()` (`src/nvhttp.cpp:1826`), which both `launch()` (line 3144) and `resume()` (line 3663) call.
+Moonlight-family clients start and resume streams with HTTPS GET `/launch` or `/resume` and a query string. Artemis builds it in `NvHTTP.launchApp()` (`app/src/main/java/com/limelight/nvstream/http/NvHTTP.java`, line 849; the query is built on lines 880 to 890), and already sends Apollo extensions such as `virtualDisplay=` and `scaleFactor=`. The host reads these in `make_launch_session_from_snapshot()` (`src/nvhttp.cpp:1826`), which both `launch()` (line 3144) and `resume()` (line 3663) call.
 
 New parameter:
 
@@ -106,7 +104,7 @@ New file `src/platform/windows/window_capture_policy.h`, namespace `platf::dxgi:
 - `struct window_blit_t { bool empty; bool covers_output; std::uint32_t src_left, src_top, src_right, src_bottom; std::uint32_t dst_x, dst_y; };`
 - `constexpr window_blit_t compute_window_blit(rect_i output, rect_i frame_bounds, rect_i client_screen, std::int32_t content_w, std::int32_t content_h);`
   - `output` is the capture display rectangle in desktop coordinates (physical pixels).
-  - `frame_bounds` is `DWMWA_EXTENDED_FRAME_BOUNDS` of the window (the WGC surface origin; not `GetWindowRect`, which includes the invisible resize border, as thorstream measured).
+  - `frame_bounds` is `DWMWA_EXTENDED_FRAME_BOUNDS` of the window (the WGC surface origin; not `GetWindowRect`, which includes the invisible resize border).
   - `client_screen` is the client rectangle in screen coordinates (`GetClientRect` plus `ClientToScreen`).
   - Source rectangle = `client_screen` shifted by `-frame_bounds.left/top`, clamped to `[0, content_w) x [0, content_h)`. Destination = the matching part of `client_screen` shifted by `-output.left/top`, then both clipped against `[0, output width) x [0, output height)` with the source adjusted by the same amount. `empty` when the result has no area. `covers_output` when the destination is `(0,0)` and the size equals the output size.
 - `struct window_candidate_t { std::uintptr_t id; bool matches_app; bool started_after_launch; bool is_foreground; bool iconic; std::int64_t client_area; };`
@@ -133,7 +131,7 @@ File `tools/sunshine_wgc_capture.cpp` plus `src/platform/windows/ipc/pipes.h` an
 5. `WgcCaptureManager` (class around line 1030; constructor line 1133):
    - New members `_window_mode`, `_target_hwnd`, `_monitor_rect`, and `_pool_width`/`_pool_height`. In display mode the pool size equals `_width`/`_height` exactly as now. In window mode the initial pool size is the window item's `Size()`.
    - `create_or_adjust_frame_pool()` (line 1263): use `_pool_width`/`_pool_height` for both `Recreate` and `CreateFreeThreaded` (lines 1275 and 1291).
-   - `process_frame()` (line 1308): before moving `frame` into `queue_frame_for_delivery()`, read `frame.ContentSize()`. After delivery, if window mode and the content size differs from the pool size, update `_pool_width/_pool_height` and call `create_or_adjust_frame_pool(_current_buffer_size)` (this must happen after the frame is released, as in thorstream `OnFrameArrived`).
+   - `process_frame()` (line 1308): before moving `frame` into `queue_frame_for_delivery()`, read `frame.ContentSize()`. After delivery, if window mode and the content size differs from the pool size, update `_pool_width/_pool_height` and call `create_or_adjust_frame_pool(_current_buffer_size)` (this must happen after the frame is released, as in the Win32CaptureSample resize handling).
    - `queue_frame_for_delivery()` (line 1713): in display mode keep the existing `CopyResource` (line 1744). In window mode, under the same `_d3d_context_mutex`:
      - If `IsIconic(_target_hwnd)`: clear the scratch texture to black and enqueue.
      - Otherwise query `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)`, `GetClientRect` and `ClientToScreen`, call `window_policy::compute_window_blit()`. If `empty`, clear to black. If not `covers_output`, clear to black first. Then `CopySubresourceRegion(scratch, 0, dst_x, dst_y, 0, frame_tex, 0, &src_box)`.
@@ -171,88 +169,79 @@ New files `src/platform/windows/window_target.h` and `window_target.cpp`, added 
 
 `src/input.cpp`, `video::make_port()`, the touch-port mailbox, `stream.cpp`, audio, the control stream, and the 0x3003 text-field packet all stay as they are. No config file keys or web UI settings are added in this first version; the client flag is the only switch.
 
-## 6. Client changes (Android)
+## 6. Client changes (Android), repository `drunkitguy/vibe-window`
 
-### 6.1 Where the client source lives
+The client lives in its own public repository `drunkitguy/vibe-window` (local clone `/home/user/vibe-window`, currently only `README.md` on `main`). Work is pushed to branch `claude/clever-clarke-k7hhhj` there. Nothing from any other client fork is used.
 
-Vendor a snapshot into this repository under `clients/android/`:
+### 6.1 Repository layout
 
-- Base: `drunkitguy/artemis-apollo2` at `4d5eb3b` (Artemis plus the owner's dual-screen keyboard work, which pairs with this host's 0x3003 packet and already has a working APK workflow design), not upstream Artemis `c5cf27f`, which lacks the 0x3003 handling.
-- `app/src/main/jni/moonlight-core/moonlight-common-c/` filled with `drunkitguy/moonlight-common-c-apollo2` at `5efdcee` (the commit the fork's submodule pins), and its nested `enet/` filled with `cgutman/enet` at `115a10b`.
-- Remove `.gitmodules` from the copy and every nested `.git` directory, so the tree is plain files.
+Commit 1, "Import upstream Artemis c5cf27f":
 
-Justification: the APK must be built by this repository's Actions, and the session can only push here. Submodules would point at other repositories this work cannot change. A git subtree would pull tens of megabytes of unrelated client history into the host repo. A plain snapshot is the smallest thing that builds reproducibly. Record provenance in `clients/android/UPSTREAM.txt`: the three upstream URLs and commit SHAs, the licence (GPL-3.0 for the client and moonlight-common-c, MIT for enet, OpenSSL and Opus licences for the bundled prebuilt libraries), and a list of the local modifications. Keep every upstream `LICENSE*` file and source header intact. This repository is itself GPL-3.0, so combining is compatible, and publishing the source here satisfies the GPL source-availability requirement for the released APK.
+- `git -C /home/user/classicoldsong/moonlight-android archive c5cf27f4dc822db0e863c4691e7a70c74bea977a | tar -x -C /home/user/vibe-window`, after moving the existing `README.md` aside. This copies the tracked files without upstream history and includes `.gitmodules`. Rename upstream's `README.md` to `README.upstream.md`.
+- Register the submodule as a real gitlink: `git update-index --add --cacheinfo 160000,c999436858471dfefa7617af3b7dc03ec1644ce4,app/src/main/jni/moonlight-core/moonlight-common-c`. Keep upstream `.gitmodules` (URL https://github.com/ClassicOldSong/moonlight-common-c). CI checks out with `submodules: recursive`, which also pulls the nested `enet`.
+- The prebuilt `libopus`/`openssl` `.a` files (12) are tracked upstream and not ignored by upstream `.gitignore`; confirm with `git ls-files | grep -c '\.a$'` = 12. Keep `gradlew` mode 100755.
+- No moonlight-common-c changes are needed (the flag is a Java query parameter), so nothing is vendored.
 
-Vendoring gotchas that must be handled:
+Commit 2 and later, "Vibe Window" changes (6.2), plus:
 
-- The host's root `.gitignore` ignores `*.a`, `*.so` and `build/`. The client depends on committed prebuilt `libopus.a`, `libssl.a` and `libcrypto.a` under `app/src/main/jni/moonlight-core/{libopus,openssl}/<abi>/`. Add `clients/android/.gitignore` containing the client's own ignore rules plus `!*.a`, and after `git add` verify with `git ls-files clients/android | wc -l` against `find` in the source snapshot that nothing was dropped.
-- The client `.gitignore` ignores `key/`, so the signing keystore goes in `clients/android/signing/`.
-- Keep `gradlew` executable (`git update-index --chmod=+x clients/android/gradlew`).
-- The large `app/src/main/assets/midas-midas-v2-w8a8.tflite` is a normal blob (no LFS), keep it.
+- `README.md`: what Vibe Window is, that it requires the patched host from https://github.com/drunkitguy/apollo2-vibe/releases (install the `window-host-v*` MSI on the PC first), defaults, the toggle, limitations, build and signing notes.
+- `NOTICE`: based on Artemis (ClassicOldSong/moonlight-android) and Moonlight (moonlight-stream), GPL-3.0; moonlight-common-c GPL-3.0; enet MIT; bundled OpenSSL and Opus under their licences; list of local modifications. Keep `LICENSE.txt` and all headers.
 
-### 6.2 Identity, name and defaults
-
-Paths below are inside `clients/android/`.
+### 6.2 Identity, name and defaults (upstream line numbers at c5cf27f)
 
 1. `app/build.gradle`
-   - Flavor `nonRoot_game` (line 59): `applicationId "app.vibewindow.client"`; flavor `root` (line 43): `applicationId "app.vibewindow.client.root"`. Replace the `nonRoot_game` `obtainium_app_url` with the same neutral `data:` URL the root flavor uses.
-   - `release` build type (lines 137 to 140): remove `applicationIdSuffix ".noir"`; set `app_label` to "Vibe Window", `app_label_root` to "Vibe Window (Root)", `app_label_game` to "Vibe Window (Game)"; add `signingConfig signingConfigs.ci`. `debug` build type (lines 98 to 101): suffix `.debug`, labels "Vibe Window Debug". These changes also satisfy the upstream comment asking forks to change the application id.
-   - `defaultConfig` (lines 14 and 15): `versionName (project.findProperty('windowClientVersionName') ?: "1.0.0")` and `versionCode Integer.parseInt((project.findProperty('windowClientVersionCode') ?: "1").toString())`. Do not use Groovy `as int` on a String, which turns a one-character string into its character code.
-   - Add `ndk { abiFilters 'arm64-v8a' }` to `defaultConfig` and set `splits.abi.enable false` (line 155). The Thor is arm64; this cuts NDK build time about four times and yields one APK.
-   - Add a `signingConfigs { ci { ... } }` block: `storeFile file("${rootDir}/signing/window-client-ci.p12")`, `storePassword` and `keyPassword` "vibewindow-public", `keyAlias` "vibewindow", `storeType "pkcs12"`. No secrets override in this version.
-   - In the `lint {}` block add `checkReleaseBuilds false` and `abortOnError false`, because the fork was only ever built in debug and lint-vital must not block a release.
-   - Leave `ndkVersion "27.0.12077973"` as upstream pins it; CI installs it.
-2. `signing/window-client-ci.p12`: generate once, locally, with
-   `keytool -genkeypair -keystore window-client-ci.p12 -storetype PKCS12 -alias vibewindow -keyalg RSA -keysize 3072 -validity 10000 -storepass vibewindow-public -keypass vibewindow-public -dname "CN=Vibe Window CI"`.
-   The DN contains no personal data. This key is public on purpose so every CI build has the same signature and new releases install as updates over old ones without a secret having to be configured (this session cannot set repository secrets). Verify with `git check-ignore -v` that the `.p12` is not ignored.
-3. Defaults (fresh install, and the new application id means a fresh preferences store):
-   - `app/src/main/java/com/limelight/preferences/PreferenceConfiguration.java`: `DEFAULT_RESOLUTION = "1920x1080"` (line 137), `DEFAULT_FPS = "120"` (line 138), `DEFAULT_USE_VIRTUAL_DISPLAY = true` (line 141).
-   - `app/src/main/res/xml/preferences.xml`: `android:defaultValue="1920x1080"` for `list_resolution` (line 13), `"120"` for `list_fps` (line 21), `"true"` for `checkbox_use_virtual_display` (line 81). `PcView` applies these via `PreferenceManager.setDefaultValues()`.
-   - The default bitrate follows automatically from `getDefaultBitrate("1920x1080", "120")` (line 487).
-   - Note: `StreamSettings` removes the 120 option only on screens reporting under 118 Hz (line ~608). The Thor's primary screen reports 120 Hz, so the default holds.
+   - Flavor `root` (line 28, `applicationId` line 43): `app.vibewindow.client.root`. Flavor `nonRoot_game` (line 48, `applicationId` line 59): `app.vibewindow.client`. Replace the `nonRoot_game` `obtainium_app_url` (lines 55 to 57) with the neutral `data:` URL the root flavor uses (line 40).
+   - `release` build type (lines 137 to 140): remove `applicationIdSuffix ".noir"`; labels "Vibe Window", "Vibe Window (Root)", "Vibe Window (Game)"; add `signingConfig signingConfigs.ci`. `debug` (lines 98 to 101): suffix `.debug`, labels "Vibe Window Debug" variants.
+   - `defaultConfig` (lines 14 and 15): `versionName (project.findProperty('windowClientVersionName') ?: "1.0.0")` and `versionCode Integer.parseInt((project.findProperty('windowClientVersionCode') ?: "1").toString())`. Never Groovy `as int` on a String.
+   - `defaultConfig`: `ndk { abiFilters 'arm64-v8a' }`; `splits.abi` (line 155): `enable false`.
+   - `signingConfigs { ci { storeFile file("${rootDir}/signing/vibe-window-ci.p12"); storePassword "vibewindow-public"; keyAlias "vibewindow"; keyPassword "vibewindow-public"; storeType "pkcs12" } }`.
+   - `lint {}` (line 71): add `checkReleaseBuilds false` and `abortOnError false`.
+   - Keep `ndkVersion "27.0.12077973"` and `compileSdk 36`.
+2. `signing/vibe-window-ci.p12` (upstream ignores `key/`, not `signing/`): `keytool -genkeypair -keystore vibe-window-ci.p12 -storetype PKCS12 -alias vibewindow -keyalg RSA -keysize 3072 -validity 10000 -storepass vibewindow-public -keypass vibewindow-public -dname "CN=Vibe Window CI"`. Public on purpose so every CI build has the same signature and updates install over older versions without secrets. Check with `git check-ignore -v`.
+3. Defaults:
+   - `app/src/main/java/com/limelight/preferences/PreferenceConfiguration.java`: `DEFAULT_RESOLUTION = "1920x1080"` (line 142), `DEFAULT_FPS = "120"` (line 143), `DEFAULT_USE_VIRTUAL_DISPLAY = true` (line 146).
+   - `app/src/main/res/xml/preferences.xml`: `android:defaultValue` `"1920x1080"` for `list_resolution` (line 13), `"120"` for `list_fps` (line 21), `"true"` for `checkbox_use_virtual_display` (line 81).
+   - The virtual display default takes effect: a normal app tap calls `ServerHelper.doStart(..., prefConfig.useVirtualDisplay)` (`AppView.java` lines 755 and 768), which sets `Game.EXTRA_VDISPLAY` (`ServerHelper.java` line 115), read in `Game.java` line 573 and passed with `.setVirtualDisplay(vDisplay)` (line 786). Resume from `PcView` passes `false` (line 780), which is fine because the display already exists.
+   - `StreamSettings.java` line 608 removes the 120 option only on screens under 118 Hz; the Thor reports 120 Hz.
 4. Window-only flag:
-   - `PreferenceConfiguration.java`: `private static final String WINDOW_ONLY_PREF_STRING = "checkbox_window_only";`, `private static final boolean DEFAULT_WINDOW_ONLY = true;`, public field `windowOnly`, read in `readPreferences()` next to `useVirtualDisplay` (line 873).
-   - `preferences.xml`: a `CheckBoxPreference` with key `checkbox_window_only`, default `true`, directly after `checkbox_use_virtual_display` (line 85).
-   - `app/src/main/res/values/strings.xml` (near line 540): `title_checkbox_window_only` "Show only the app window" and `summary_checkbox_window_only` "Stream only the launched app's window and hide the Windows desktop. Requires the Vibepollo window-only host build." English only; other locales fall back.
-   - `app/src/main/java/com/limelight/nvstream/StreamConfiguration.java`: field `windowOnly` (near line 17), `Builder.setWindowOnly(boolean)`, getter `getWindowOnly()` (near line 198), default `false` in the constructor (line 161).
-   - `app/src/main/java/com/limelight/Game.java`: add `.setWindowOnly(prefConfig.windowOnly)` in the `StreamConfiguration.Builder` chain (line 828).
-   - `NvHTTP.java`: append `"&windowOnly=" + (context.streamConfig.getWindowOnly() ? 1 : 0)` after the `virtualDisplay` parameter (line 887). This covers both `launch` and `resume`.
-5. No changes to the renderer, input, or JNI code.
+   - `PreferenceConfiguration.java`: `WINDOW_ONLY_PREF_STRING = "checkbox_window_only"` next to `USE_VIRTUAL_DISPLAY_PREF_STRING` (line 49), `DEFAULT_WINDOW_ONLY = true`, public field `windowOnly` on line 249, read next to line 884.
+   - `preferences.xml`: `CheckBoxPreference` key `checkbox_window_only`, default `true`, right after the `checkbox_use_virtual_display` entry.
+   - `app/src/main/res/values/strings.xml` after line 568: `title_checkbox_window_only` "Show only the app window", `summary_checkbox_window_only` "Stream only the launched app's window and hide the Windows desktop. Requires the Vibepollo window-only host build."
+   - `StreamConfiguration.java`: field next to `virtualDisplay` (line 17), `Builder.setWindowOnly(boolean)` next to line 64, default `false` next to line 161, `getWindowOnly()` next to line 198.
+   - `Game.java`: `.setWindowOnly(prefConfig.windowOnly)` after `.setVirtualDisplay(vDisplay)` (line 786).
+   - `NvHTTP.java`: `"&windowOnly=" + (context.streamConfig.getWindowOnly() ? 1 : 0) +` after the `virtualDisplay` line (887). Covers launch and resume.
+5. `strings.xml` line 145 `email_recipient`: set to an empty string so crash logs from this fork are not mailed to Artemis maintainers.
+6. No renderer, input, JNI or moonlight-common-c changes.
 
-## 7. CI workflow for the APK and the host installer
+### 6.3 Compatibility of upstream Artemis with this host
 
-This session can only push to branch `claude/clever-clarke-k7hhhj`. Tag pushes may be refused and `workflow_dispatch` only works for workflows that exist on the default branch, so the release must be created from a normal branch push. The APK is useless without the patched host, so the same release also carries the host MSI.
+- The host's 0x3003 "Set Text Field Focus" packet (`src/stream.cpp` line 1801) is sent only when `text_field_detection` is enabled and the watcher runs. Upstream moonlight-common-c at `c999436` handles unknown control types by falling through to `free(ctlHdr)` in `controlReceiveThreadFunc` (`ControlStream.c` around lines 1255 to 1375), so the packet is ignored harmlessly. No gating needed.
+- Upstream already sends `virtualDisplay=`, `scaleFactor=` and `mode=WxHxFPS`, which this host reads. Hosts without this patch ignore `windowOnly=`.
 
-New file `.github/workflows/window-only-release.yml`, independent of `ci.yml`. The release tag prefix `window-client-v` does not match `ci.yml`'s release gate regex, so it never triggers a host SignPath release.
+## 7. CI workflows
 
-- `name: Window-only release`
-- Triggers: `push` to branches `claude/clever-clarke-k7hhhj` and `vibepollo-base` with `paths: [clients/android/**, src/**, tools/**, tests/**, cmake/**, .github/workflows/window-only-release.yml]`. No `pull_request` trigger.
-- Top-level `permissions: {}`; `concurrency: { group: window-only-release-${{ github.ref }}, cancel-in-progress: true }`.
-- Version: `clients/android/VERSION` holds one line, for example `1.0.0`. Tag is `window-client-v<VERSION>`.
-- Job `android` on `ubuntu-latest`, `permissions: contents: read`, `defaults.run.working-directory: clients/android`, `timeout-minutes: 60`:
-  1. `actions/checkout` (same SHA `ci.yml` pins for v6.0.2).
-  2. `actions/setup-java@v4`, `temurin`, `'17'`, `cache: gradle`, `cache-dependency-path: clients/android/**/*.gradle*`.
-  3. `android-actions/setup-android@v3`, then `sdkmanager --install "ndk;27.0.12077973"`.
-  4. `VERSION_NAME=$(cat VERSION)`, `VERSION_CODE=$((1000 + GITHUB_RUN_NUMBER))`.
-  5. `chmod +x gradlew && ./gradlew :app:assembleNonRoot_gameRelease --no-daemon --stacktrace -PwindowClientVersionName=$VERSION_NAME -PwindowClientVersionCode=$VERSION_CODE`.
-  6. Copy the APK to `dist/VibeWindow-$VERSION_NAME-arm64-v8a.apk`. Locate apksigner with `ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -1` and run `apksigner verify --print-certs` (fails the job if unsigned). Write `dist/*.sha256`.
-  7. `actions/upload-artifact@v4` named `vibe-window-apk`, `if-no-files-found: error`.
-- Job `windows`: `uses: ./.github/workflows/ci-windows.yml` exactly as `ci.yml`'s `build-windows` calls it, with `build_only: false`, `build_tests: true`, `release_commit: ${{ github.sha }}`, `release_version: 0.0.0`, `release_artifact_retention_days: 7`, `symbol_product_name: Vibepollo`, `symbol_release_prefix: polo`, `publish_symbols: false`, `require_truehdr_runtime: false`, `permissions: actions: read, contents: read`, and no secrets. This compiles the host, the helper and the unit tests (including `test_component_window_capture_policy`) and uploads `unsigned-msi-Windows`.
-- Job `release`, `needs: [android, windows]`, `permissions: contents: write`:
-  1. Checkout, read `VERSION`, and skip the remaining steps if `gh release view window-client-v$VERSION` succeeds (`GH_TOKEN: ${{ github.token }}`), so re-pushes do not fail.
-  2. `actions/download-artifact@v4` for `vibe-window-apk` and `unsigned-msi-Windows` into `dist`. Rename the MSI to `Vibepollo-WindowOnly-$VERSION.msi` and add its `.sha256`.
-  3. `softprops/action-gh-release@v2` with `tag_name: window-client-v$VERSION`, `target_commitish: ${{ github.sha }}`, `name: Vibe Window $VERSION`, `files: dist/*`, `fail_on_unmatched_files: true`, `make_latest: true`, `generate_release_notes: false`, and a fixed `body`: what it is, install the MSI on the Windows PC first (unsigned, so SmartScreen asks "More info, Run anyway"), sideload the arm64 APK on the Thor, the window-only toggle, known limitations (popups, exclusive fullscreen, UAC shows the secure desktop), and that source is in this repository under GPL-3.0. No names, emails, handles or local paths.
+### 7.1 Client release, in `drunkitguy/vibe-window`
 
-How to publish the first release: set `clients/android/VERSION` to `1.0.0` and push the branch. If `android` or `windows` fails, fix and push again; the release is created by the first fully green run.
+New file `.github/workflows/release.yml` (upstream has no workflows):
 
-If the `windows` job fails for reasons unrelated to this change (for example a missing secret), record the cause, and publish the APK-only release by temporarily making `release` depend on `android` only, stating in the body that the host build is pending.
+- Trigger: `push` to branches `claude/clever-clarke-k7hhhj` and `main`. Top-level `permissions: {}`, `concurrency` per ref with cancel-in-progress.
+- Version: root file `VERSION` (for example `1.0.0`); tag `v<VERSION>`.
+- Job `build` (`ubuntu-latest`, `contents: read`, 60 min): `actions/checkout@v4` with `submodules: recursive`; `actions/setup-java@v4` temurin 17 with `cache: gradle`; `android-actions/setup-android@v3`; `sdkmanager --install "ndk;27.0.12077973"`; `VERSION_CODE=$((1000 + GITHUB_RUN_NUMBER))`; `./gradlew :app:assembleNonRoot_gameRelease --no-daemon --stacktrace -PwindowClientVersionName=... -PwindowClientVersionCode=...`; copy to `dist/VibeWindow-<VERSION>-arm64-v8a.apk`; `apksigner verify --print-certs` using the newest `$ANDROID_HOME/build-tools/*`; write `.sha256`; upload artifact `vibe-window-apk` (`if-no-files-found: error`).
+- Job `release` (`needs: build`, `contents: write`): skip if `gh release view v<VERSION>` succeeds; download the artifact; `softprops/action-gh-release@v2` with `tag_name: v<VERSION>`, `target_commitish: ${{ github.sha }}`, `name: Vibe Window <VERSION>`, `files: dist/*`, `fail_on_unmatched_files: true`, `make_latest: true`, and a fixed body: requires the patched host (link https://github.com/drunkitguy/apollo2-vibe/releases), sideload steps, defaults, toggle, limitations, GPL-3.0 source in this repo. No names, emails or local paths.
+
+### 7.2 Host installer, in `drunkitguy/apollo2-vibe`
+
+`.github/workflows/window-only-release.yml`, triggered by `push` to `claude/clever-clarke-k7hhhj` and `vibepollo-base` with `paths: [src/**, tools/**, tests/**, cmake/**, .github/window-only-host-version.txt, .github/workflows/window-only-release.yml]`. Version from `.github/window-only-host-version.txt`; tag `window-host-v<VERSION>` (does not match `ci.yml`'s release gate, and tags created by `GITHUB_TOKEN` trigger no workflows). No android job.
+
+- Job `windows`: `uses: ./.github/workflows/ci-windows.yml` with `build_only: false`, `build_tests: true`, `release_commit: ${{ github.sha }}`, `release_version: 0.0.0`, `release_artifact_retention_days: 7`, `symbol_product_name: Vibepollo`, `symbol_release_prefix: polo`, `publish_symbols: false`, `require_truehdr_runtime: false`, `permissions: actions: read, contents: read`, no secrets. It builds the host, the helper and the tests and uploads `unsigned-msi-Windows`.
+- Job `release` (`needs: windows`, `contents: write`): skip if the release exists; download `unsigned-msi-Windows`; rename to `Vibepollo-WindowOnly-<VERSION>.msi` plus `.sha256`; `softprops/action-gh-release@v2`, `make_latest: true`, body: unsigned MSI (SmartScreen "More info, Run anyway"), pair with the Vibe Window APK from https://github.com/drunkitguy/vibe-window/releases, limitations. No personal data.
 
 ## 8. Acceptance criteria
 
 Build and release:
 
-1. `.github/workflows/window-only-release.yml` `android` and `windows` jobs succeed on the feature branch.
-2. A GitHub Release tagged `window-client-v1.0.0` exists in `drunkitguy/apollo2-vibe`, is public, contains the APK, the host MSI and their `.sha256` files, and `apksigner verify` passed in the log.
+1. `vibe-window` `release.yml` and `apollo2-vibe` `window-only-release.yml` succeed on branch `claude/clever-clarke-k7hhhj`.
+2. Public release `v1.0.0` in `drunkitguy/vibe-window` with the APK and `.sha256` (`apksigner verify` passed), and public release `window-host-v1.0.0` in `drunkitguy/apollo2-vibe` with the MSI and `.sha256`.
 3. The `windows` job compiles `sunshine`, `sunshine_wgc_capture` and the tests.
 4. `test_component_window_capture_policy` and the updated `RtspStartupSnapshot` test pass.
 
@@ -283,11 +272,10 @@ Host behaviour (manual test on the user's PC, since CI cannot run a GPU session)
 | Menus and popups not visible for desktop apps. | Documented; games are the target use. Follow-up: composite owned popups as extra WGC items. |
 | Exclusive-fullscreen games deliver no window frames. | Documented; ask the user to use borderless. Follow-up: fall back to display capture when `fullscreen_detector` reports exclusive D3D fullscreen. |
 | Yellow capture border drawn on the host monitor on some Windows builds. | `IsBorderRequired(false)` is already attempted. The border is never part of the captured frame, so the stream is unaffected. |
-| Publicly known signing key allows a third party to build an APK that installs over this one. | Only matters for APKs obtained elsewhere; documented in `UPSTREAM.txt`. A private key via repository secrets is a follow-up. |
+| Publicly known signing key allows a third party to build an APK that installs over this one. | Only matters for APKs obtained elsewhere; documented in the vibe-window README. A private key via repository secrets is a follow-up. |
 | Jitpack or Maven outages break the Android build. | Gradle cache in `setup-java`; rerun. |
-| Release-type build trips lint or R8 issues never seen in the fork's debug builds. | Lint made non-blocking; the fork's `proguard-rules.pro` is the same one upstream uses for its release builds. If R8 still fails, fall back to `assembleNonRoot_gameDebug` with the same signing config and debug label changes, and note the switch in the release body. |
+| Release-type build trips lint or R8 issues never seen in upstream's CI-less release builds. | Lint made non-blocking; upstream's own `proguard-rules.pro` is used. If R8 still fails, fall back to `assembleNonRoot_gameDebug` with the same signing config and debug label changes, and note the switch in the release body. |
 | `config_data_t` size change between main and helper. | Both are built together and installed together; the helper already rejects messages of unexpected size. |
-| Crash-log email string in the client points at the Artemis upstream maintainers. | Left as is (third-party attribution, not personal data of the user). Optional: blank `email_recipient` in `strings.xml` so logs are not sent upstream for a fork. |
 
 ## 10. Follow-ups (out of scope for the first version)
 

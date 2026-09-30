@@ -343,6 +343,10 @@ namespace platf::dxgi {
     config_data.initial_frame_buffer_size = wgc_initial_frame_buffer_size();
     config_data.max_frame_buffer_size = wgc_max_frame_buffer_size(_config);
     config_data.activity_admission_fps = _activity_admission_fps.load(std::memory_order_relaxed);
+    if (_config.window_only) {
+      config_data.flags |= WGC_IPC_FLAG_WINDOW_CAPTURE;
+      config_data.target_hwnd = static_cast<uint64_t>(_window_target.load(std::memory_order_relaxed));
+    }
 
     // Convert display_name (std::string) to wchar_t[32]
     if (!_display_name.empty()) {

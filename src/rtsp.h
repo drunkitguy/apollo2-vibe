@@ -94,6 +94,8 @@ namespace rtsp_stream {
     // Moonlight's VRR request passed its launch-time VSync, display-refresh,
     // and adaptive-headroom checks. The renderer may still fall back later.
     bool client_vrr_requested = false;
+    // The client's `windowOnly=1` launch flag: capture only the launched app's window.
+    bool window_only = false;
     bool client_display_mode_override;
     // Exact refresh requested by a per-client display-mode override, expressed
     // in millihertz. The existing fps field remains the legacy stream cadence.

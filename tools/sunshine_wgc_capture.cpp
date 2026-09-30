@@ -32,10 +32,12 @@
 #include "src/platform/windows/ipc/misc_utils.h"
 #include "src/platform/windows/ipc/pipes.h"
 #include "src/platform/windows/wgc_capture_policy.h"
+#include "src/platform/windows/window_capture_policy.h"
 #include "src/utility.h"  // For RAII utilities
 
 // platform includes
 #include <d3d11.h>
+#include <dwmapi.h>
 #include <dxgi1_2.h>
 #include <inspectable.h>  // For IInspectable
 #include <KnownFolders.h>
@@ -133,7 +135,7 @@ const int INITIAL_LOG_LEVEL = 2;
 constexpr uint32_t DEFAULT_WGC_IPC_FLAGS =
   platf::dxgi::WGC_IPC_FLAG_DRAIN_TO_LATEST |
   platf::dxgi::WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE;
-static platf::dxgi::config_data_t g_config = {0, 0, 0, L"", {0, 0}, 10000, 60, 1, 2, DEFAULT_WGC_IPC_FLAGS, 120};
+static platf::dxgi::config_data_t g_config = {0, 0, 0, L"", {0, 0}, 10000, 60, 1, 2, DEFAULT_WGC_IPC_FLAGS, 120, 0};
 static std::mutex g_config_mutex;
 static std::condition_variable g_config_cv;
 static std::atomic<int32_t> g_activity_admission_fps {120};
@@ -740,6 +742,43 @@ public:
   }
 
   /**
+   * @brief Creates a Windows Graphics Capture item for a single top-level window.
+   *
+   * @param hwnd The window to capture.
+   * @param[out] item Reference to a GraphicsCaptureItem that will be set on success.
+   * @return true if the GraphicsCaptureItem was successfully created; false otherwise.
+   */
+  bool create_window_capture_item(HWND hwnd, GraphicsCaptureItem &item) {
+    if (!hwnd || !IsWindow(hwnd)) {
+      BOOST_LOG(warning) << "Window-only target is no longer a window";
+      return false;
+    }
+
+    try {
+      auto activation_factory = winrt::get_activation_factory<GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
+      HRESULT hr = activation_factory->CreateForWindow(hwnd, winrt::guid_of<GraphicsCaptureItem>(), winrt::put_abi(item));
+      if (FAILED(hr)) {
+        BOOST_LOG(error) << "Failed to create GraphicsCaptureItem for window: " << hr;
+        item = nullptr;
+        return false;
+      }
+    } catch (const winrt::hresult_error &ex) {
+      BOOST_LOG(error) << "Failed to create GraphicsCaptureItem for window: " << ex.code();
+      item = nullptr;
+      return false;
+    }
+    return static_cast<bool>(item);
+  }
+
+  /**
+   * @brief Gets the selected monitor rectangle in desktop coordinates (physical pixels).
+   * @return The monitor rectangle.
+   */
+  RECT monitor_rect() const {
+    return _monitor_info.rcMonitor;
+  }
+
+  /**
    * @brief Calculates the final capture resolution based on config, monitor info, and WGC item size.
    *
    * Chooses resolution in this order:
@@ -1039,6 +1078,16 @@ struct WgcCaptureDependencies {
   winrt::com_ptr<ID3D11DeviceContext> d3d_context;  // D3D11 context for copies
 };
 
+/**
+ * @brief Window-only capture settings. The shared texture keeps the display size and the
+ * window's client area is copied to its true position on the display; every other pixel is black.
+ */
+struct WgcWindowCaptureTarget {
+  bool enabled = false;  // Window-only session; never copy a whole display frame
+  HWND hwnd = nullptr;  // Captured window, or nullptr when only black is published
+  RECT monitor_rect {};  // Capture display rectangle in desktop coordinates
+};
+
 class WgcCaptureManager {
 private:
   enum class scratch_state_e {
@@ -1050,6 +1099,7 @@ private:
 
   struct scratch_texture_t {
     winrt::com_ptr<ID3D11Texture2D> texture;
+    winrt::com_ptr<ID3D11RenderTargetView> rtv;  ///< Created on first clear in window-only mode
     scratch_state_e state = scratch_state_e::free;
   };
 
@@ -1116,6 +1166,11 @@ private:
   DXGI_FORMAT _capture_format = DXGI_FORMAT_UNKNOWN;  ///< DXGI format for captured frames
   UINT _height = 0;  ///< Capture height in pixels
   UINT _width = 0;  ///< Capture width in pixels
+  bool _window_mode = false;  ///< Composite one window at its true position instead of copying the display
+  HWND _target_hwnd = nullptr;  ///< Captured window in window mode
+  RECT _monitor_rect {};  ///< Capture display rectangle in desktop coordinates
+  UINT _pool_width = 0;  ///< Frame pool width (display width, or window size in window mode)
+  UINT _pool_height = 0;  ///< Frame pool height (display height, or window size in window mode)
 
 public:
   /**
@@ -1129,12 +1184,23 @@ public:
    * @param height Capture height in pixels.
    * @param deps Bundle of dependencies: winrt IDirect3DDevice, GraphicsCaptureItem,
    *             reference to SharedResourceManager and D3D11 context com_ptr.
+   * @param window_target Window-only capture settings; disabled for display capture.
    */
-  WgcCaptureManager(DXGI_FORMAT capture_format, UINT width, UINT height, WgcCaptureDependencies deps):
+  WgcCaptureManager(DXGI_FORMAT capture_format, UINT width, UINT height, WgcCaptureDependencies deps, WgcWindowCaptureTarget window_target = {}):
       _deps(std::move(deps)),
       _capture_format(capture_format),
       _height(height),
-      _width(width) {
+      _width(width),
+      _window_mode(window_target.enabled),
+      _target_hwnd(window_target.hwnd),
+      _monitor_rect(window_target.monitor_rect),
+      _pool_width(width),
+      _pool_height(height) {
+    if (_window_mode && _target_hwnd && _deps->graphics_item) {
+      const auto item_size = _deps->graphics_item.Size();
+      _pool_width = static_cast<UINT>(std::max(1, item_size.Width));
+      _pool_height = static_cast<UINT>(std::max(1, item_size.Height));
+    }
     _max_buffer_size = std::clamp<uint32_t>(
       g_config.max_frame_buffer_size ? g_config.max_frame_buffer_size : ABSOLUTE_MAX_BUFFER_SIZE,
       1,
@@ -1272,7 +1338,7 @@ public:
           _deps->winrt_device,
           (_capture_format == DXGI_FORMAT_R16G16B16A16_FLOAT) ? DirectXPixelFormat::R16G16B16A16Float : DirectXPixelFormat::B8G8R8A8UIntNormalized,
           buffer_size,
-          SizeInt32 {static_cast<int32_t>(_width), static_cast<int32_t>(_height)}
+          SizeInt32 {static_cast<int32_t>(_pool_width), static_cast<int32_t>(_pool_height)}
         );
 
         _current_buffer_size = buffer_size;
@@ -1288,7 +1354,7 @@ public:
         _deps->winrt_device,
         (_capture_format == DXGI_FORMAT_R16G16B16A16_FLOAT) ? DirectXPixelFormat::R16G16B16A16Float : DirectXPixelFormat::B8G8R8A8UIntNormalized,
         buffer_size,
-        SizeInt32 {static_cast<int32_t>(_width), static_cast<int32_t>(_height)}
+        SizeInt32 {static_cast<int32_t>(_pool_width), static_cast<int32_t>(_pool_height)}
       );
 
       if (_frame_pool) {
@@ -1346,18 +1412,27 @@ public:
       }
     } else {
       // Frame successfully retrieved
+      SizeInt32 content_size {0, 0};
       try {
         auto surface = frame.Surface();
+        content_size = frame.ContentSize();
 
         // Get frame timing information from the WGC frame
         uint64_t frame_qpc = frame.SystemRelativeTime().count();
         record_frame_arrival(drained_frames);
         if (admit_activity_frame()) {
-          queue_frame_for_delivery(std::move(frame), surface, frame_qpc);
+          queue_frame_for_delivery(std::move(frame), surface, frame_qpc, content_size);
         }
       } catch (const winrt::hresult_error &ex) {
         // Log error
         BOOST_LOG(error) << "WinRT error in frame processing: " << ex.code() << " - " << winrt::to_string(ex.message());
+      }
+
+      // A window resize changes the content size; the pool must follow it, but only
+      // after the frame has been released back to the pool.
+      frame = nullptr;
+      if (_window_mode) {
+        resize_window_frame_pool(content_size);
       }
     }
 
@@ -1366,6 +1441,112 @@ public:
   }
 
 private:
+  void resize_window_frame_pool(const SizeInt32 &content_size) {
+    if (content_size.Width <= 0 || content_size.Height <= 0) {
+      return;
+    }
+
+    const auto width = static_cast<UINT>(content_size.Width);
+    const auto height = static_cast<UINT>(content_size.Height);
+    if (width == _pool_width && height == _pool_height) {
+      return;
+    }
+
+    BOOST_LOG(info) << "Window content size changed [" << _pool_width << 'x' << _pool_height
+                    << " -> " << width << 'x' << height << "]; resizing frame pool";
+    _pool_width = width;
+    _pool_height = height;
+    create_or_adjust_frame_pool(_current_buffer_size);
+  }
+
+  /**
+   * @brief Map the window's client area in a WGC window frame onto the capture display.
+   * @return An empty blit when the window is minimized, gone, or not on the display.
+   */
+  platf::dxgi::window_policy::window_blit_t query_window_blit(const winrt::com_ptr<ID3D11Texture2D> &frame_tex, const SizeInt32 &content_size) const {
+    platf::dxgi::window_policy::window_blit_t none {};
+    none.empty = true;
+
+    if (!_target_hwnd || !IsWindow(_target_hwnd) || IsIconic(_target_hwnd)) {
+      return none;
+    }
+
+    RECT frame_bounds {};
+    if (FAILED(DwmGetWindowAttribute(_target_hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &frame_bounds, sizeof(frame_bounds)))) {
+      return none;
+    }
+
+    RECT client {};
+    POINT client_origin {0, 0};
+    if (!GetClientRect(_target_hwnd, &client) || !ClientToScreen(_target_hwnd, &client_origin)) {
+      return none;
+    }
+
+    D3D11_TEXTURE2D_DESC desc {};
+    frame_tex->GetDesc(&desc);
+    const auto content_w = static_cast<std::int32_t>(std::min<std::int64_t>(content_size.Width, desc.Width));
+    const auto content_h = static_cast<std::int32_t>(std::min<std::int64_t>(content_size.Height, desc.Height));
+
+    // The output is sized from the shared texture so the destination can never exceed it.
+    const platf::dxgi::window_policy::rect_i output {
+      _monitor_rect.left,
+      _monitor_rect.top,
+      _monitor_rect.left + static_cast<LONG>(_width),
+      _monitor_rect.top + static_cast<LONG>(_height),
+    };
+    const platf::dxgi::window_policy::rect_i bounds {frame_bounds.left, frame_bounds.top, frame_bounds.right, frame_bounds.bottom};
+    const platf::dxgi::window_policy::rect_i client_screen {
+      client_origin.x,
+      client_origin.y,
+      client_origin.x + client.right,
+      client_origin.y + client.bottom,
+    };
+    return platf::dxgi::window_policy::compute_window_blit(output, bounds, client_screen, content_w, content_h);
+  }
+
+  /**
+   * @brief Fill a scratch texture with opaque black. Must be called with the D3D context lock held.
+   */
+  bool clear_scratch_texture(scratch_texture_t &scratch) {
+    if (!scratch.texture) {
+      return false;
+    }
+
+    if (!scratch.rtv) {
+      winrt::com_ptr<ID3D11Device> device;
+      _deps->d3d_context->GetDevice(device.put());
+      if (!device || FAILED(device->CreateRenderTargetView(scratch.texture.get(), nullptr, scratch.rtv.put()))) {
+        BOOST_LOG(error) << "Failed to create render target view for window-only scratch texture";
+        scratch.rtv = nullptr;
+        return false;
+      }
+    }
+
+    // Zero RGB is black for both BGRA8 and FP16 scRGB.
+    constexpr float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    _deps->d3d_context->ClearRenderTargetView(scratch.rtv.get(), black);
+    return true;
+  }
+
+  /**
+   * @brief Copy the window's client area into the scratch texture and black out the rest.
+   * Must be called with the D3D context lock held.
+   * @return false when the frame must be dropped.
+   */
+  bool composite_window_frame(scratch_texture_t &scratch, const winrt::com_ptr<ID3D11Texture2D> &frame_tex, const SizeInt32 &content_size) {
+    const auto blit = query_window_blit(frame_tex, content_size);
+    if ((blit.empty || !blit.covers_output) && !clear_scratch_texture(scratch)) {
+      return false;
+    }
+    if (blit.empty) {
+      return true;
+    }
+
+    const D3D11_BOX src_box {blit.src_left, blit.src_top, 0, blit.src_right, blit.src_bottom, 1};
+    _deps->d3d_context->CopySubresourceRegion(scratch.texture.get(), 0, blit.dst_x, blit.dst_y, 0, frame_tex.get(), 0, &src_box);
+    return true;
+  }
+
   bool drain_to_latest() const {
     return (g_config.flags & platf::dxgi::WGC_IPC_FLAG_DRAIN_TO_LATEST) != 0;
   }
@@ -1709,8 +1890,9 @@ private:
    * @param frame The WGC frame object; it is released before the shared IPC mutex can block.
    * @param surface The captured D3D11 surface.
    * @param frame_qpc The QPC timestamp from when the frame was captured.
+   * @param content_size The valid size of the frame surface (used in window-only mode).
    */
-  void queue_frame_for_delivery(Direct3D11CaptureFrame frame, winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DSurface surface, uint64_t frame_qpc) {
+  void queue_frame_for_delivery(Direct3D11CaptureFrame frame, winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DSurface surface, uint64_t frame_qpc, SizeInt32 content_size) {
     if (!_deps) {
       return;
     }
@@ -1739,15 +1921,25 @@ private:
       return;
     }
 
+    bool copied = true;
     {
       std::lock_guard context_lock(_d3d_context_mutex);
-      _deps->d3d_context->CopyResource(_scratch_textures[*scratch_index].texture.get(), frame_tex.get());
+      if (_window_mode) {
+        copied = composite_window_frame(_scratch_textures[*scratch_index], frame_tex, content_size);
+      } else {
+        _deps->d3d_context->CopyResource(_scratch_textures[*scratch_index].texture.get(), frame_tex.get());
+      }
     }
 
     // From here on the delivery thread owns only the helper scratch texture, not
     // the Direct3D11CaptureFrame/WGC frame-pool buffer. The helper can wait for
     // the main process' shared keyed mutex without starving WGC FrameArrived.
     frame = nullptr;
+
+    if (!copied) {
+      release_reserved_scratch_texture(*scratch_index);
+      return;
+    }
 
     if (!enqueue_scratch_texture(*scratch_index, frame_qpc)) {
       return;
@@ -2001,6 +2193,47 @@ public:
   }
 
   /**
+   * @brief Publish one opaque black frame to the main process.
+   *
+   * Window-only sessions use this before the first window frame and when no target
+   * window exists, so the stream never falls back to showing the desktop.
+   * @return true if the frame was queued for delivery.
+   */
+  bool publish_black_frame() {
+    if (!_deps) {
+      return false;
+    }
+
+    auto scratch_index = reserve_scratch_texture();
+    if (!scratch_index) {
+      return false;
+    }
+
+    if (!ensure_scratch_texture(*scratch_index)) {
+      release_reserved_scratch_texture(*scratch_index);
+      return false;
+    }
+
+    bool cleared = false;
+    {
+      std::lock_guard context_lock(_d3d_context_mutex);
+      cleared = clear_scratch_texture(_scratch_textures[*scratch_index]);
+    }
+    if (!cleared) {
+      release_reserved_scratch_texture(*scratch_index);
+      return false;
+    }
+
+    LARGE_INTEGER qpc {};
+    QueryPerformanceCounter(&qpc);
+    if (!enqueue_scratch_texture(*scratch_index, static_cast<uint64_t>(qpc.QuadPart))) {
+      return false;
+    }
+    _delivery_cv.notify_one();
+    return true;
+  }
+
+  /**
    * @brief Starts the capture session if available.
    */
   void start_capture() const {
@@ -2177,7 +2410,9 @@ void handle_ipc_message(std::span<const uint8_t> message) {
                     << ", max_buffers: " << g_config.max_frame_buffer_size
                     << ", force_sdr_capture: " << ((g_config.flags & platf::dxgi::WGC_IPC_FLAG_FORCE_SDR_CAPTURE_FORMAT) ? "yes" : "no")
                     << ", drain_to_latest: " << ((g_config.flags & platf::dxgi::WGC_IPC_FLAG_DRAIN_TO_LATEST) ? "yes" : "no")
-                    << ", allow_buffer_decrease: " << ((g_config.flags & platf::dxgi::WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE) ? "yes" : "no");
+                    << ", allow_buffer_decrease: " << ((g_config.flags & platf::dxgi::WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE) ? "yes" : "no")
+                    << ", window_capture: " << ((g_config.flags & platf::dxgi::WGC_IPC_FLAG_WINDOW_CAPTURE) ? "yes" : "no")
+                    << ", target_hwnd: 0x" << std::hex << g_config.target_hwnd << std::dec;
     g_config_cv.notify_all();
   }
 }
@@ -2383,10 +2618,29 @@ int main(int argc, char *argv[]) {
   // changes, DWM restarts and monitor removals all do this (especially on Windows 10).
   // Exit so the main process notices the broken pipe and reinitializes capture instead
   // of freezing on the last delivered frame.
-  item.Closed([](GraphicsCaptureItem const &, winrt::Windows::Foundation::IInspectable const &) {
+  auto on_item_closed = [](GraphicsCaptureItem const &, winrt::Windows::Foundation::IInspectable const &) {
     BOOST_LOG(warning) << "GraphicsCaptureItem closed; shutting down so capture can be reinitialized";
     g_capture_item_closed.store(true, std::memory_order_release);
-  });
+  };
+  item.Closed(on_item_closed);
+
+  // Window-only sessions capture a single window, composited at its true position on
+  // this display. Without a usable window the helper publishes black instead of
+  // falling back to the display, so the desktop never reaches the stream. A closed
+  // window exits the helper so the main process can pick a new target.
+  const bool window_mode = (g_config.flags & platf::dxgi::WGC_IPC_FLAG_WINDOW_CAPTURE) != 0;
+  GraphicsCaptureItem window_item = nullptr;
+  if (window_mode) {
+    const auto target_hwnd = reinterpret_cast<HWND>(static_cast<std::uintptr_t>(g_config.target_hwnd));
+    if (target_hwnd && display_manager.create_window_capture_item(target_hwnd, window_item)) {
+      window_item.Closed(on_item_closed);
+      BOOST_LOG(info) << "Window-only capture of window 0x" << std::hex << g_config.target_hwnd << std::dec;
+    } else {
+      window_item = nullptr;
+      BOOST_LOG(info) << "Window-only capture has no target window; publishing black";
+    }
+  }
+  const bool black_mode = window_mode && !window_item;
 
   // Use FP16 whenever the stream is HDR or the target output is already in
   // Advanced Color, except when the main process asks for SDR-compatible
@@ -2438,26 +2692,38 @@ int main(int argc, char *argv[]) {
   // Create dependencies for capture manager
   WgcCaptureDependencies deps {
     d3d11_manager.get_winrt_device(),
-    item,
+    window_item ? window_item : item,
     shared_resource_manager,
     d3d11_manager.get_context()
   };
 
+  const WgcWindowCaptureTarget window_target {
+    .enabled = window_mode,
+    .hwnd = window_item ? reinterpret_cast<HWND>(static_cast<std::uintptr_t>(g_config.target_hwnd)) : nullptr,
+    .monitor_rect = display_manager.monitor_rect(),
+  };
+
   // Create WGC capture manager
-  WgcCaptureManager wgc_capture_manager {capture_format, display_manager.get_width(), display_manager.get_height(), std::move(deps)};
-  const auto initial_frame_buffer_size = std::clamp<uint32_t>(
-    g_config.initial_frame_buffer_size ? g_config.initial_frame_buffer_size : 1,
-    1,
-    std::max<uint32_t>(1, g_config.max_frame_buffer_size ? g_config.max_frame_buffer_size : 1)
-  );
-  if (!wgc_capture_manager.create_or_adjust_frame_pool(initial_frame_buffer_size)) {
-    BOOST_LOG(error) << "Failed to create frame pool";
-    return 1;
+  WgcCaptureManager wgc_capture_manager {capture_format, display_manager.get_width(), display_manager.get_height(), std::move(deps), window_target};
+  if (window_mode && !wgc_capture_manager.publish_black_frame()) {
+    BOOST_LOG(warning) << "Failed to publish the initial window-only black frame";
   }
 
-  if (!wgc_capture_manager.create_capture_session()) {
-    BOOST_LOG(error) << "Failed to create capture session";
-    return 1;
+  if (!black_mode) {
+    const auto initial_frame_buffer_size = std::clamp<uint32_t>(
+      g_config.initial_frame_buffer_size ? g_config.initial_frame_buffer_size : 1,
+      1,
+      std::max<uint32_t>(1, g_config.max_frame_buffer_size ? g_config.max_frame_buffer_size : 1)
+    );
+    if (!wgc_capture_manager.create_or_adjust_frame_pool(initial_frame_buffer_size)) {
+      BOOST_LOG(error) << "Failed to create frame pool";
+      return 1;
+    }
+
+    if (!wgc_capture_manager.create_capture_session()) {
+      BOOST_LOG(error) << "Failed to create capture session";
+      return 1;
+    }
   }
 
   // Set up desktop switch hook for secure desktop detection
