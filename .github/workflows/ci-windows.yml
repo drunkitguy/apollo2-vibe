@@ -31,6 +31,10 @@ on:
         required: false
         type: boolean
         default: false
+      disable_update_check:
+        required: false
+        type: boolean
+        default: false
       release_artifact_retention_days:
         required: false
         type: number
@@ -463,6 +467,7 @@ jobs:
             -S . \
             -DBUILD_WERROR=ON \
             -DBUILD_TESTS=${{ inputs.build_tests && 'ON' || 'OFF' }} \
+            -DSUNSHINE_DISABLE_UPDATE_CHECK=${{ inputs.disable_update_check && 'ON' || 'OFF' }} \
             -DBUILD_SUNSHINE_VIRTUAL_DISPLAY_DRIVER=OFF \
             -DBUILD_VIRTUALDISPLAY_PROBE=OFF \
             -DBUILD_VIRTUALDISPLAY_TOOLS=OFF \

@@ -81,6 +81,8 @@ jobs:
       build_only: false
       build_tests: true
       run_window_only_tests: true
+      # Upstream releases are not updates for this build.
+      disable_update_check: true
       release_commit: ${{ github.sha }}
       release_version: ${{ needs.check.outputs.version }}
       release_artifact_retention_days: 7
@@ -171,5 +173,7 @@ jobs:
             - Switching from a launcher to the game window freezes the picture for about a second while capture restarts.
             - Audio is still the whole system mix.
             - A window-only stream and a regular stream cannot run at the same time; the host refuses the second one.
+            - Resizable windows are sized to fill the display. A fixed-size window smaller than the display leaves a black margin, and taps or clicks on that margin still reach whatever lies there on the host.
+            - Update notifications are turned off in this build; check this repository's releases for new versions.
 
             Source code is in this repository under GPL-3.0.

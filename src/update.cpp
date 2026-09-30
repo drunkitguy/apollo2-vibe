@@ -239,6 +239,11 @@ namespace update {
   }
 
   void trigger_check(bool force) {
+#ifdef SUNSHINE_DISABLE_UPDATE_CHECK
+    // This build is released outside the upstream channel; an upstream release is not an update for it.
+    (void) force;
+    return;
+#endif
     const bool in_progress = state.check_in_progress.load();
     if (in_progress) {
       BOOST_LOG(info) << "Update check trigger skipped: another check is in progress (force="sv << (force ? "true"sv : "false"sv) << ')';
