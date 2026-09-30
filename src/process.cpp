@@ -1932,7 +1932,7 @@ namespace proc {
 #ifdef _WIN32
     // Windows of processes created from here on, and windows that appear from here on,
     // belong to the app (window-only capture).
-    platf::window_target::mark_launch(_launch_session && _launch_session->window_only);
+    platf::window_target::mark_launch();
 #endif
 
     for (auto &cmd : _app.detached) {

@@ -50,35 +50,58 @@ namespace platf::window_target {
     std::atomic<std::uintptr_t> g_last_logged_shell_drop {0};
 
     // Top-level windows that were visible when the app was launched, sorted. Null when no
-    // snapshot was taken, in which case no window counts as new.
-    std::mutex g_launch_windows_mutex;
-    std::shared_ptr<const std::vector<std::uintptr_t>> g_launch_windows;
+    // snapshot could be taken, in which case no window counts as new.
+    //
+    // Every piece of shared state in this file is constructed on first use and never
+    // destroyed, so neither static initialization order nor exit order can matter.
+    struct launch_windows_state_t {
+      std::mutex mutex;
+      std::shared_ptr<const std::vector<std::uintptr_t>> windows;
+    };
+
+    launch_windows_state_t &launch_windows_state() {
+      static auto *state = new launch_windows_state_t {};
+      return *state;
+    }
 
     std::shared_ptr<const std::vector<std::uintptr_t>> launch_windows() {
-      std::lock_guard lock(g_launch_windows_mutex);
-      return g_launch_windows;
+      auto &state = launch_windows_state();
+      std::lock_guard lock(state.mutex);
+      return state.windows;
     }
 
     /**
-     * @brief Collect the visible top-level windows of the input desktop.
-     * Runs on a short-lived thread so the caller's desktop binding is left alone.
+     * @brief Collect the visible top-level windows of the interactive "Default" desktop.
+     * @return Null when the desktop cannot be opened or enumerated (for example while the
+     * host is locked), so that no window counts as new.
      */
-    std::vector<std::uintptr_t> visible_top_level_windows() {
+    std::shared_ptr<const std::vector<std::uintptr_t>> visible_top_level_windows() {
+      HDESK desktop = OpenDesktopW(L"Default", 0, FALSE, DESKTOP_READOBJECTS | DESKTOP_ENUMERATE);
+      if (!desktop) {
+        BOOST_LOG(debug) << "Window-only: cannot open the Default desktop to record launch windows: "sv << GetLastError();
+        return nullptr;
+      }
+
       std::vector<std::uintptr_t> windows;
-      std::thread([&windows] {
-        syncThreadDesktop();
-        EnumWindows(
-          [](HWND hwnd, LPARAM param) -> BOOL {
-            if (IsWindowVisible(hwnd)) {
-              reinterpret_cast<std::vector<std::uintptr_t> *>(param)->push_back(reinterpret_cast<std::uintptr_t>(hwnd));
-            }
-            return TRUE;
-          },
-          reinterpret_cast<LPARAM>(&windows)
-        );
-      }).join();
+      const BOOL enumerated = EnumDesktopWindows(
+        desktop,
+        [](HWND hwnd, LPARAM param) -> BOOL {
+          if (IsWindowVisible(hwnd)) {
+            reinterpret_cast<std::vector<std::uintptr_t> *>(param)->push_back(reinterpret_cast<std::uintptr_t>(hwnd));
+          }
+          return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&windows)
+      );
+      const DWORD error = enumerated ? ERROR_SUCCESS : GetLastError();
+      CloseDesktop(desktop);
+      if (!enumerated) {
+        BOOST_LOG(debug) << "Window-only: cannot enumerate the Default desktop to record launch windows: "sv << error;
+        return nullptr;
+      }
+
       std::sort(windows.begin(), windows.end());
-      return windows;
+      return std::make_shared<const std::vector<std::uintptr_t>>(std::move(windows));
     }
 
     std::uint64_t filetime_ticks(const FILETIME &time) {
@@ -163,8 +186,8 @@ namespace platf::window_target {
     };
 
     process_cache_t &process_cache() {
-      static process_cache_t cache;
-      return cache;
+      static auto *cache = new process_cache_t {};
+      return *cache;
     }
 
     using app_matcher_t = std::function<bool(DWORD, std::string_view)>;
@@ -185,22 +208,26 @@ namespace platf::window_target {
       return selection;
     }
 
+    struct app_selection_cache_t {
+      std::mutex mutex;
+      app_selection_t cached;
+      std::chrono::steady_clock::time_point loaded_at {};
+      std::uint64_t loaded_for_launch = 0;
+    };
+
     app_selection_t current_app_selection() {
-      static std::mutex mutex;
-      static app_selection_t cached;
-      static std::chrono::steady_clock::time_point loaded_at {};
-      static std::uint64_t loaded_for_launch = 0;
+      static auto *cache = new app_selection_cache_t {};
 
       const auto now = std::chrono::steady_clock::now();
       const auto launch = g_launch_time.load(std::memory_order_acquire);
-      std::lock_guard lock(mutex);
-      if (loaded_at == std::chrono::steady_clock::time_point {} || launch != loaded_for_launch ||
-          now - loaded_at >= app_selection_refresh) {
-        cached = load_app_selection();
-        loaded_at = now;
-        loaded_for_launch = launch;
+      std::lock_guard lock(cache->mutex);
+      if (cache->loaded_at == std::chrono::steady_clock::time_point {} || launch != cache->loaded_for_launch ||
+          now - cache->loaded_at >= app_selection_refresh) {
+        cache->cached = load_app_selection();
+        cache->loaded_at = now;
+        cache->loaded_for_launch = launch;
       }
-      return cached;
+      return cache->cached;
     }
 
     bool window_is_cloaked(HWND hwnd) {
@@ -469,14 +496,12 @@ namespace platf::window_target {
     }
   }  // namespace
 
-  void mark_launch(const bool snapshot_windows) {
-    std::shared_ptr<const std::vector<std::uintptr_t>> windows;
-    if (snapshot_windows) {
-      windows = std::make_shared<const std::vector<std::uintptr_t>>(visible_top_level_windows());
-    }
+  void mark_launch() {
+    auto windows = visible_top_level_windows();
     {
-      std::lock_guard lock(g_launch_windows_mutex);
-      g_launch_windows = std::move(windows);
+      auto &state = launch_windows_state();
+      std::lock_guard lock(state.mutex);
+      state.windows = std::move(windows);
     }
 
     FILETIME now {};
