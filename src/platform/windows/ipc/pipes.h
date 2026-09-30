@@ -12,6 +12,7 @@
 // standard includes
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -61,6 +62,16 @@ namespace platf::dxgi {
   };
 
   /**
+   * @brief Flags carried in config_data_t::flags.
+   */
+  enum wgc_ipc_config_flags_e : uint32_t {
+    WGC_IPC_FLAG_DRAIN_TO_LATEST = 1u << 0,
+    WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE = 1u << 1,
+    WGC_IPC_FLAG_FORCE_SDR_CAPTURE_FORMAT = 1u << 2,
+    WGC_IPC_FLAG_WINDOW_CAPTURE = 1u << 3,
+  };
+
+  /**
    * @brief Structure for configuration data shared via IPC.
    * @param dynamic_range Dynamic range setting.
    * @param advanced_color_capture Whether the target output is already in HDR/Advanced Color.
@@ -74,15 +85,9 @@ namespace platf::dxgi {
    * @param initial_frame_buffer_size Initial WGC frame pool buffer count.
    * @param max_frame_buffer_size Maximum WGC frame pool buffer count for adaptive growth.
    * @param flags Bitmask of wgc_ipc_config_flags_e values.
+   * @param activity_admission_fps Initial helper admission rate for game activity.
    * @param target_hwnd Window to capture when WGC_IPC_FLAG_WINDOW_CAPTURE is set; `0` publishes black.
    */
-  enum wgc_ipc_config_flags_e : uint32_t {
-    WGC_IPC_FLAG_DRAIN_TO_LATEST = 1u << 0,
-    WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE = 1u << 1,
-    WGC_IPC_FLAG_FORCE_SDR_CAPTURE_FORMAT = 1u << 2,
-    WGC_IPC_FLAG_WINDOW_CAPTURE = 1u << 3,
-  };
-
   struct config_data_t {
     int dynamic_range;
     uint32_t advanced_color_capture;
@@ -97,6 +102,18 @@ namespace platf::dxgi {
     int32_t activity_admission_fps;
     uint64_t target_hwnd;
   };
+
+  // The main process and the WGC helper exchange this struct as raw bytes; both are built
+  // from this header, but a layout change must be deliberate.
+  static_assert(sizeof(wchar_t) == 2, "config_data_t assumes a 16-bit wchar_t");
+  static_assert(sizeof(config_data_t) == 128, "config_data_t layout changed");
+  static_assert(offsetof(config_data_t, display_name) == 12);
+  static_assert(offsetof(config_data_t, adapter_luid) == 76);
+  static_assert(offsetof(config_data_t, min_update_interval_100ns) == 88);
+  static_assert(offsetof(config_data_t, target_fps) == 96);
+  static_assert(offsetof(config_data_t, flags) == 108);
+  static_assert(offsetof(config_data_t, activity_admission_fps) == 112);
+  static_assert(offsetof(config_data_t, target_hwnd) == 120);
 
   constexpr uint32_t WGC_ACTIVITY_ADMISSION_MESSAGE_MAGIC = 0x57474341;  // "WGCA"
 

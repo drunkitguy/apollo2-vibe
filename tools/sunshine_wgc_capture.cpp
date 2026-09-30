@@ -1415,7 +1415,10 @@ public:
       SizeInt32 content_size {0, 0};
       try {
         auto surface = frame.Surface();
-        content_size = frame.ContentSize();
+        if (_window_mode) {
+          // Only window capture needs the content size (blit bounds and pool resizes).
+          content_size = frame.ContentSize();
+        }
 
         // Get frame timing information from the WGC frame
         uint64_t frame_qpc = frame.SystemRelativeTime().count();
@@ -1531,10 +1534,10 @@ private:
   /**
    * @brief Copy the window's client area into the scratch texture and black out the rest.
    * Must be called with the D3D context lock held.
+   * @param blit Placement from query_window_blit, computed before taking the lock.
    * @return false when the frame must be dropped.
    */
-  bool composite_window_frame(scratch_texture_t &scratch, const winrt::com_ptr<ID3D11Texture2D> &frame_tex, const SizeInt32 &content_size) {
-    const auto blit = query_window_blit(frame_tex, content_size);
+  bool composite_window_frame(scratch_texture_t &scratch, const winrt::com_ptr<ID3D11Texture2D> &frame_tex, const platf::dxgi::window_policy::window_blit_t &blit) {
     if ((blit.empty || !blit.covers_output) && !clear_scratch_texture(scratch)) {
       return false;
     }
@@ -1921,11 +1924,17 @@ private:
       return;
     }
 
+    // The window queries are syscalls into the window manager; keep them out of the context lock.
+    platf::dxgi::window_policy::window_blit_t window_blit {};
+    if (_window_mode) {
+      window_blit = query_window_blit(frame_tex, content_size);
+    }
+
     bool copied = true;
     {
       std::lock_guard context_lock(_d3d_context_mutex);
       if (_window_mode) {
-        copied = composite_window_frame(_scratch_textures[*scratch_index], frame_tex, content_size);
+        copied = composite_window_frame(_scratch_textures[*scratch_index], frame_tex, window_blit);
       } else {
         _deps->d3d_context->CopyResource(_scratch_textures[*scratch_index].texture.get(), frame_tex.get());
       }
