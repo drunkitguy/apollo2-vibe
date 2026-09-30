@@ -174,6 +174,20 @@ function Resolve-PrebuiltPackageRoot {
     throw "[SunshineVirtualDisplay] Unable to locate prebuilt driver/tools package layout under $resolved"
 }
 
+function Invoke-GitQuery {
+    param(
+        [Parameter(Mandatory = $true)][string]$GitPath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    # Windows PowerShell 5.1 turns native stderr into a terminating NativeCommandError
+    # while ErrorActionPreference is Stop, even with 2>$null. A failing query (for
+    # example git describe in a shallow, tagless submodule checkout) must only leave
+    # a non-zero $LASTEXITCODE for the caller to handle.
+    $ErrorActionPreference = 'Continue'
+    return (& $GitPath @Arguments 2>$null)
+}
+
 function Resolve-PackageVersionFromGit {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -182,7 +196,7 @@ function Resolve-PackageVersionFromGit {
         return ''
     }
 
-    $describe = & $git.Source -C $Path describe --tags --long --match 'v[0-9]*' 2>$null
+    $describe = Invoke-GitQuery -GitPath $git.Source -Arguments @('-C', $Path, 'describe', '--tags', '--long', '--match', 'v[0-9]*')
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($describe)) {
         return ''
     }
@@ -190,7 +204,7 @@ function Resolve-PackageVersionFromGit {
     if ($describe -match '^v?([0-9]+\.[0-9]+\.[0-9]+)(?:-([0-9]+)-g[0-9a-f]+)?(?:-.+)?$') {
         $baseVersion = $Matches[1]
         $commitsSinceTag = if ($Matches.Count -gt 2 -and $Matches[2]) { [int]$Matches[2] } else { 0 }
-        $dirty = & $git.Source -C $Path status --porcelain 2>$null
+        $dirty = Invoke-GitQuery -GitPath $git.Source -Arguments @('-C', $Path, 'status', '--porcelain')
         if ($LASTEXITCODE -eq 0 -and $dirty) {
             $commitsSinceTag++
         }
@@ -238,7 +252,7 @@ function Resolve-NextLocalDirtyPackageVersion {
         return $Version
     }
 
-    $dirty = & $git.Source -C $LibRoot status --porcelain 2>$null
+    $dirty = Invoke-GitQuery -GitPath $git.Source -Arguments @('-C', $LibRoot, 'status', '--porcelain')
     if ($LASTEXITCODE -ne 0 -or -not $dirty -or
         [string]::IsNullOrWhiteSpace($ExistingInfPath) -or
         -not (Test-Path -LiteralPath $ExistingInfPath -PathType Leaf)) {
@@ -291,7 +305,7 @@ function Resolve-DriverVerDateFromGit {
 
     $git = Get-Command git -ErrorAction SilentlyContinue
     if ($git) {
-        $date = & $git.Source -C $Path log -1 '--format=%cd' '--date=format:%m/%d/%Y' 2>$null
+        $date = Invoke-GitQuery -GitPath $git.Source -Arguments @('-C', $Path, 'log', '-1', '--format=%cd', '--date=format:%m/%d/%Y')
         if ($LASTEXITCODE -eq 0 -and $date -match '^[0-9][0-9]/[0-9][0-9]/[0-9][0-9][0-9][0-9]$') {
             return $date
         }
