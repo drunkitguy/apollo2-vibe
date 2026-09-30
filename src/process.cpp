@@ -941,7 +941,7 @@ namespace proc {
       _app(std::move(other._app)),
       _app_launch_time(other._app_launch_time),
       _active_client_uuid(std::move(other._active_client_uuid)),
-      placebo(other.placebo),
+      placebo(other.placebo.load()),
       _process(std::move(other._process)),
       _process_group(std::move(other._process_group)),
 #ifdef _WIN32
@@ -979,7 +979,7 @@ namespace proc {
       _app = std::move(other._app);
       _app_launch_time = other._app_launch_time;
       _active_client_uuid = std::move(other._active_client_uuid);
-      placebo = other.placebo;
+      placebo = other.placebo.load();
       _process = std::move(other._process);
       _process_group = std::move(other._process_group);
       _pipe = std::move(other._pipe);
@@ -2053,8 +2053,14 @@ namespace proc {
         std::error_code fec;
         boost::filesystem::path wd;  // empty wd
         {
+          // Spawn outside the lock; readers of the running app state only wait for the swap.
+          bp::group process_group;
+          auto process = platf::run_command(false, true, cmd, wd, _env, _pipe.get(), fec, &process_group);
           std::lock_guard running_state_lock(_running_state_mutex);
-          _process = platf::run_command(false, true, cmd, wd, _env, _pipe.get(), fec, &_process_group);
+          _process = std::move(process);
+          _process_group = std::move(process_group);
+          // Move assignment leaves the source attached to an invalid handle; never terminate it.
+          process_group.detach();
         }
         if (fec) {
           BOOST_LOG(warning) << "Playnite helper launch failed: "sv << fec.message() << "; attempting URI fallback"sv;
@@ -2121,8 +2127,14 @@ namespace proc {
         std::error_code fec;
         boost::filesystem::path wd;  // empty wd
         {
+          // Spawn outside the lock; readers of the running app state only wait for the swap.
+          bp::group process_group;
+          auto process = platf::run_command(false, true, cmd, wd, _env, _pipe.get(), fec, &process_group);
           std::lock_guard running_state_lock(_running_state_mutex);
-          _process = platf::run_command(false, true, cmd, wd, _env, _pipe.get(), fec, &_process_group);
+          _process = std::move(process);
+          _process_group = std::move(process_group);
+          // Move assignment leaves the source attached to an invalid handle; never terminate it.
+          process_group.detach();
         }
         if (fec) {
           BOOST_LOG(warning) << "Playnite fullscreen helper launch failed: "sv << fec.message();
@@ -2171,8 +2183,14 @@ namespace proc {
 #endif
       BOOST_LOG(info) << "Executing: ["sv << _app.cmd << "] in ["sv << working_dir << ']';
       {
+        // Spawn outside the lock; readers of the running app state only wait for the swap.
+        bp::group process_group;
+        auto process = platf::run_command(_app.elevated, true, _app.cmd, working_dir, _env, _pipe.get(), ec, &process_group);
         std::lock_guard running_state_lock(_running_state_mutex);
-        _process = platf::run_command(_app.elevated, true, _app.cmd, working_dir, _env, _pipe.get(), ec, &_process_group);
+        _process = std::move(process);
+        _process_group = std::move(process_group);
+        // Move assignment leaves the source attached to an invalid handle; never terminate it.
+        process_group.detach();
       }
       if (ec) {
         BOOST_LOG(warning) << "Couldn't run ["sv << _app.cmd << "]: System: "sv << ec.message();

@@ -269,8 +269,9 @@ namespace proc {
     // fields changed in place while an app runs are never read by those readers.
     mutable std::mutex _running_state_mutex;
 
-    // If no command associated with _app_id, yet it's still running
-    bool placebo {};
+    // If no command associated with _app_id, yet it's still running.
+    // Atomic because running_app_state() reads it from the window-only tracker thread.
+    std::atomic<bool> placebo {false};
 
 #ifdef _WIN32
     bool _deferred_launch {false};
