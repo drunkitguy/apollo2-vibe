@@ -231,7 +231,7 @@ namespace platf::window_target {
       }
 
       const auto ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-      if ((ex_style & WS_EX_TOOLWINDOW) != 0 || foreground_app::is_passive_overlay_window(hwnd)) {
+      if ((ex_style & WS_EX_TOOLWINDOW) != 0 || foreground_app::is_window_selection_overlay(hwnd)) {
         return TRUE;
       }
 

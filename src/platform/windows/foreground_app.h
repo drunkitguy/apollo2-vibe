@@ -70,9 +70,14 @@ namespace platf::foreground_app {
   bool is_desktop_ui_window(HWND hwnd, std::string_view executable);
 
   /**
-   * @brief True for click-through, non-activating, transparent or fully see-through overlay windows.
+   * @brief True for overlay windows that window-only capture must never select.
+   *
+   * Layered windows count only when they are click-through or non-activating, captionless and
+   * topmost, or fully see-through. Other layered windows (skinned launchers, fade-ins) stay
+   * eligible. A non-layered window counts when it is frameless and click-through or non-activating.
+   * Used only for window-only target selection; the existing foreground checks are unchanged.
    */
-  bool is_passive_overlay_window(HWND hwnd);
+  bool is_window_selection_overlay(HWND hwnd);
 
   bool path_equal_or_basename_match(std::string_view lhs, std::string_view rhs);
   bool path_is_under_directory(std::string_view path, std::string_view directory);

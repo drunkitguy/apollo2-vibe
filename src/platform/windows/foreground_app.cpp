@@ -779,13 +779,20 @@ namespace platf::foreground_app {
     return matcher;
   }
 
-  bool is_passive_overlay_window(HWND hwnd) {
-    const auto ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-    // Layered and transparent windows let clicks fall through; they are overlays even with a caption.
-    if ((ex_style & WS_EX_LAYERED) != 0 && (ex_style & WS_EX_TRANSPARENT) != 0) {
-      return true;
+  bool is_window_selection_overlay(HWND hwnd) {
+    const auto style = static_cast<std::uintptr_t>(GetWindowLongPtrW(hwnd, GWL_STYLE));
+    const auto ex_style = static_cast<std::uintptr_t>(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
+    const bool layered = (ex_style & WS_EX_LAYERED) != 0;
+    const bool click_through_or_inactive = (ex_style & (WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)) != 0;
+    const bool captionless = (style & WS_CAPTION) != WS_CAPTION;
+
+    if (layered) {
+      // Skinned launchers and fading windows are layered too; only overlays are dropped.
+      return click_through_or_inactive || (captionless && (ex_style & WS_EX_TOPMOST) != 0) ||
+             !window_has_visible_alpha(hwnd);
     }
-    return window_is_passive_compositor_host(hwnd) || !window_has_visible_alpha(hwnd);
+    // A frameless window that never activates or lets clicks through is an overlay host.
+    return click_through_or_inactive && captionless && (style & WS_THICKFRAME) == 0;
   }
 
   bool is_desktop_ui_window(HWND hwnd, std::string_view executable) {
