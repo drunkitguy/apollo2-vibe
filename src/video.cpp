@@ -2689,7 +2689,7 @@ namespace video {
     capture_ctxs.emplace_back(std::move(*initial_capture_ctx));
     // A window-only capture shows one window and a regular capture the whole display; a
     // session asking for the other mode must not share this capture.
-    const bool capture_window_only = capture_ctxs.front().config.window_only;
+    bool capture_window_only = capture_ctxs.front().config.window_only;
 
     std::vector<std::string> display_names;
     int display_p = -1;
@@ -2899,9 +2899,19 @@ namespace video {
         while (capture_ctx_queue->peek()) {
           auto capture_ctx = std::move(*capture_ctx_queue->pop());
           if (capture_ctx.config.window_only != capture_window_only) {
-            refuse_mixed_window_only_session(capture_ctx.config.window_only);
-            capture_ctx.images->stop();
-            continue;
+            if (!capture_ctxs.empty()) {
+              refuse_mixed_window_only_session(capture_ctx.config.window_only);
+              capture_ctx.images->stop();
+              continue;
+            }
+
+            // No session uses this capture any more: rebuild it in the new session's mode.
+            BOOST_LOG(info) << "Capture mode changes to "sv << (capture_ctx.config.window_only ? "window-only"sv : "full display"sv)
+                            << " for the next session; reinitializing capture"sv;
+            capture_window_only = capture_ctx.config.window_only;
+            capture_ctxs.emplace_back(std::move(capture_ctx));
+            artificial_reinit = true;
+            return false;
           }
           capture_ctxs.emplace_back(std::move(capture_ctx));
         }
@@ -5360,10 +5370,28 @@ namespace video {
             return false;
           }
           if (encode_session_ctx->config.window_only != display_window_only) {
-            refuse_mixed_window_only_session(encode_session_ctx->config.window_only);
-            encode_session_ctx->shutdown_event->raise(true);
-            encode_session_ctx->join_event->raise(true);
-            continue;
+            const bool others_ending = std::all_of(std::begin(synced_session_ctxs), std::end(synced_session_ctxs), [](const auto &ctx) {
+              return ctx->shutdown_event->peek();
+            });
+            if (!others_ending) {
+              refuse_mixed_window_only_session(encode_session_ctx->config.window_only);
+              encode_session_ctx->shutdown_event->raise(true);
+              encode_session_ctx->join_event->raise(true);
+              continue;
+            }
+
+            // Every session on this display is ending: finish them and rebuild the display
+            // in the new session's mode.
+            BOOST_LOG(info) << "Capture mode changes to "sv << (encode_session_ctx->config.window_only ? "window-only"sv : "full display"sv)
+                            << " for the next session; reinitializing capture"sv;
+            synced_sessions.clear();
+            for (auto &ctx : synced_session_ctxs) {
+              ctx->join_event->raise(true);
+            }
+            synced_session_ctxs.clear();
+            synced_session_ctxs.emplace_back(std::make_unique<sync_session_ctx_t>(std::move(*encode_session_ctx)));
+            ec = platf::capture_e::reinit;
+            return false;
           }
 
           synced_session_ctxs.emplace_back(std::make_unique<sync_session_ctx_t>(std::move(*encode_session_ctx)));
