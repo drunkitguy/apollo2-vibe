@@ -17,6 +17,8 @@ export interface HostMetadata {
   commit?: string;
   branch?: string;
   release_date?: string;
+  update_check_disabled?: boolean;
+  releases_url?: string;
   [key: string]: unknown;
 }
 

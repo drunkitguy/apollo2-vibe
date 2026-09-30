@@ -2915,6 +2915,11 @@ namespace confighttp {
 #endif
     // Build/release date provided by CMake (ISO 8601 when available)
     output_tree["release_date"] = PROJECT_RELEASE_DATE;
+#ifdef SUNSHINE_DISABLE_UPDATE_CHECK
+    // Builds released outside the upstream channel point the web UI at their own releases.
+    output_tree["update_check_disabled"] = true;
+    output_tree["releases_url"] = SUNSHINE_RELEASES_URL;
+#endif
 #if defined(_WIN32)
     try {
       const auto gpus = platf::enumerate_gpus();

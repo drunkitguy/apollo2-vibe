@@ -18,6 +18,8 @@ option(SUNSHINE_ENABLE_TRAY "Enable system tray icon." ON)
 option(SUNSHINE_ENABLE_WEBRTC "Enable WebRTC streaming support (Windows only)." OFF)
 option(SUNSHINE_DISABLE_UPDATE_CHECK
         "Never check the upstream releases for updates (for builds released outside the upstream channel)." OFF)
+set(SUNSHINE_RELEASES_URL "https://github.com/drunkitguy/apollo2-vibe/releases"
+        CACHE STRING "Release page the web UI links to when SUNSHINE_DISABLE_UPDATE_CHECK is ON.")
 
 option(SUNSHINE_SYSTEM_VULKAN_HEADERS "Use system installation of vulkan-headers rather than the submodule." OFF)
 option(SUNSHINE_SYSTEM_WAYLAND_PROTOCOLS "Use system installation of wayland-protocols rather than the submodule." OFF)

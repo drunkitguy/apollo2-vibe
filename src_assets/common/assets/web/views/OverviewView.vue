@@ -389,7 +389,7 @@ onBeforeUnmount(() => {
           </div>
           <a
             class="button button--secondary button--compact"
-            href="https://github.com/Nonary/Vibepollo/releases/latest"
+            :href="system.metadata?.releases_url || 'https://github.com/Nonary/Vibepollo/releases/latest'"
             target="_blank"
             rel="noopener noreferrer"
           >
