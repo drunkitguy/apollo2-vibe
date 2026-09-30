@@ -81,6 +81,8 @@ jobs:
       build_only: false
       build_tests: true
       run_window_only_tests: true
+      # A build that crashes at startup must never be released.
+      run_startup_smoke: true
       # Upstream releases are not updates for this build.
       disable_update_check: true
       release_commit: ${{ github.sha }}
