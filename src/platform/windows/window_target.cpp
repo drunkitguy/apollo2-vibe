@@ -5,7 +5,6 @@
 #include "window_target.h"
 
 // standard includes
-#include <array>
 #include <chrono>
 #include <filesystem>
 #include <functional>
@@ -84,7 +83,8 @@ namespace platf::window_target {
           }
         }
 
-        std::array<wchar_t, 32768> path {};
+        // Only cache misses get here; keep the long-path buffer off the stack.
+        std::vector<wchar_t> path(32768);
         DWORD size = static_cast<DWORD>(path.size());
         if (QueryFullProcessImageNameW(process, 0, path.data(), &size)) {
           try {
