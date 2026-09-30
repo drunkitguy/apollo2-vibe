@@ -512,24 +512,28 @@ jobs:
 
       # Starts the unstripped sunshine.exe under gdb and fails the job when it exits
       # within the smoke window, so a build that crashes at startup is never packaged.
+      # A self-test first proves that the harness reports a program that crashes in a
+      # static initializer, the way window-host-v1.0.0 did.
       - name: Smoke test sunshine.exe startup
         if: inputs.run_startup_smoke
         shell: msys2 {0}
         run: |
           set -uo pipefail
-          pacman -S --noconfirm --needed "mingw-w64-${{ matrix.toolchain }}-gdb" > /dev/null
 
-          smoke_dir="$(cygpath -u "${RUNNER_TEMP}")/sunshine-smoke"
-          rm -rf "${smoke_dir}"
-          mkdir -p "${smoke_dir}"
-          smoke_dir_win="$(cygpath -m "${smoke_dir}")"
-          {
-            echo "log_path = ${smoke_dir_win}/sunshine.log"
-            echo "system_tray = disabled"
-            echo "update_check_interval = 0"
-          } > "${smoke_dir}/sunshine.conf"
+          smoke_root="$(cygpath -u "${RUNNER_TEMP}")/sunshine-smoke"
+          rm -rf "${smoke_root}"
+          mkdir -p "${smoke_root}"
+          smoke_root_win="$(cygpath -m "${smoke_root}")"
+          smoke_seconds=25
 
-          cat > "${smoke_dir}/gdb.cmd" <<'GDB'
+          if ! pacman -S --noconfirm --needed "mingw-w64-${{ matrix.toolchain }}-gdb" > "${smoke_root}/pacman.log" 2>&1 ||
+            ! command -v gdb > /dev/null; then
+            cat "${smoke_root}/pacman.log"
+            echo "::error::Smoke test setup failed: gdb could not be installed. This is a CI problem, not a sunshine.exe crash." >&2
+            exit 1
+          fi
+
+          cat > "${smoke_root}/gdb.cmd" <<'GDB'
           set pagination off
           set confirm off
           set print thread-events off
@@ -547,29 +551,76 @@ jobs:
           quit 3
           end
           run
-          echo SUNSHINE_EXITED\n
+          echo SMOKE_PROGRAM_EXITED\n
           quit 4
           GDB
 
-          smoke_seconds=25
-          timeout "${smoke_seconds}" gdb -batch -x "${smoke_dir}/gdb.cmd" \
-            --args "$(cygpath -m build/sunshine.exe)" "${smoke_dir_win}/sunshine.conf" \
-            > "${smoke_dir}/gdb.log" 2>&1
-          rc=$?
-          taskkill //F //IM sunshine.exe > /dev/null 2>&1 || true
+          kill_tree() {
+            local image
+            for image in sunshine.exe sunshine_display_helper.exe sunshine_wgc_capture.exe smoke-selftest.exe; do
+              taskkill //F //T //IM "${image}" > /dev/null 2>&1 || true
+            done
+          }
 
-          echo "::group::gdb output"
-          tail -n 400 "${smoke_dir}/gdb.log"
-          echo "::endgroup::"
-          echo "::group::sunshine.log"
-          tail -n 200 "${smoke_dir}/sunshine.log" 2> /dev/null || echo "sunshine.log was not written"
-          echo "::endgroup::"
+          # run_smoke NAME PROGRAM [ARGS...]: runs PROGRAM under gdb for up to
+          # smoke_seconds and sets smoke_rc (124 means it was still running).
+          smoke_rc=0
+          run_smoke() {
+            local name="$1"
+            shift
+            timeout "${smoke_seconds}" gdb -batch -x "${smoke_root}/gdb.cmd" --args "$@" > "${smoke_root}/${name}-gdb.log" 2>&1
+            smoke_rc=$?
+            kill_tree
+            echo "::group::${name}: gdb output (exit ${smoke_rc})"
+            tail -n 400 "${smoke_root}/${name}-gdb.log"
+            echo "::endgroup::"
+          }
 
-          if [[ "${rc}" -ne 124 ]]; then
-            echo "::error::sunshine.exe did not stay up for ${smoke_seconds} s (gdb exit ${rc}); see the backtrace above" >&2
+          # 1. Self-test: a program that throws from a static initializer must be reported.
+          cat > "${smoke_root}/smoke-selftest.cpp" <<'CPP'
+          #include <cerrno>
+          #include <chrono>
+          #include <system_error>
+          #include <thread>
+
+          namespace {
+            struct crash_at_startup {
+              crash_at_startup() {
+                throw std::system_error(EINVAL, std::generic_category());
+              }
+            } instance;
+          }  // namespace
+
+          int main() {
+            std::this_thread::sleep_for(std::chrono::hours(1));
+          }
+          CPP
+          if ! c++ -std=gnu++23 -O0 -g -o "${smoke_root}/smoke-selftest.exe" "${smoke_root}/smoke-selftest.cpp"; then
+            echo "::error::Smoke test setup failed: the self-test program did not compile. This is a CI problem, not a sunshine.exe crash." >&2
             exit 1
           fi
-          echo "sunshine.exe stayed up for ${smoke_seconds} s"
+          run_smoke selftest "${smoke_root_win}/smoke-selftest.exe"
+          if [[ "${smoke_rc}" -eq 124 ]] || ! grep -q "crash_at_startup" "${smoke_root}/selftest-gdb.log"; then
+            echo "::error::Smoke test harness is broken: it did not report a program that crashes at startup (gdb exit ${smoke_rc})." >&2
+            exit 1
+          fi
+          echo "Smoke self-test: the harness reported the crashing program (gdb exit ${smoke_rc}) with a backtrace."
+
+          # 2. sunshine.exe must stay up for the whole smoke window.
+          {
+            echo "log_path = ${smoke_root_win}/sunshine.log"
+            echo "system_tray = disabled"
+            echo "update_check_interval = 0"
+          } > "${smoke_root}/sunshine.conf"
+          run_smoke sunshine "$(cygpath -m build/sunshine.exe)" "${smoke_root_win}/sunshine.conf"
+          echo "::group::sunshine.log"
+          tail -n 200 "${smoke_root}/sunshine.log" 2> /dev/null || echo "sunshine.log was not written"
+          echo "::endgroup::"
+          if [[ "${smoke_rc}" -ne 124 ]]; then
+            echo "::error::sunshine.exe exited within ${smoke_seconds} s of starting (gdb exit ${smoke_rc}); see the backtrace above." >&2
+            exit 1
+          fi
+          echo "Smoke test: sunshine.exe stayed up for ${smoke_seconds} s."
 
       - name: Test window-only capture policy
         if: inputs.run_window_only_tests && inputs.build_tests
