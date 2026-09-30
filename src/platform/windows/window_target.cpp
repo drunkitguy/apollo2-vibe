@@ -5,10 +5,12 @@
 #include "window_target.h"
 
 // standard includes
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <functional>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -39,12 +41,45 @@ namespace platf::window_target {
     // The app's matcher needs a Playnite status query; it changes only when an app starts or stops.
     constexpr auto app_selection_refresh = 1s;
     constexpr std::size_t max_cached_processes = 1024;
+    constexpr auto process_revalidate_interval = 1s;
 
     std::atomic<std::uint64_t> g_launch_time {0};
     // Survives display reinitialization so the choice stays sticky across capture restarts.
     std::atomic<std::uintptr_t> g_last_target {0};
     // Last foreground window dropped as shell UI, so the drop is logged once.
     std::atomic<std::uintptr_t> g_last_logged_shell_drop {0};
+
+    // Top-level windows that were visible when the app was launched, sorted. Null when no
+    // snapshot was taken, in which case no window counts as new.
+    std::mutex g_launch_windows_mutex;
+    std::shared_ptr<const std::vector<std::uintptr_t>> g_launch_windows;
+
+    std::shared_ptr<const std::vector<std::uintptr_t>> launch_windows() {
+      std::lock_guard lock(g_launch_windows_mutex);
+      return g_launch_windows;
+    }
+
+    /**
+     * @brief Collect the visible top-level windows of the input desktop.
+     * Runs on a short-lived thread so the caller's desktop binding is left alone.
+     */
+    std::vector<std::uintptr_t> visible_top_level_windows() {
+      std::vector<std::uintptr_t> windows;
+      std::thread([&windows] {
+        syncThreadDesktop();
+        EnumWindows(
+          [](HWND hwnd, LPARAM param) -> BOOL {
+            if (IsWindowVisible(hwnd)) {
+              reinterpret_cast<std::vector<std::uintptr_t> *>(param)->push_back(reinterpret_cast<std::uintptr_t>(hwnd));
+            }
+            return TRUE;
+          },
+          reinterpret_cast<LPARAM>(&windows)
+        );
+      }).join();
+      std::sort(windows.begin(), windows.end());
+      return windows;
+    }
 
     std::uint64_t filetime_ticks(const FILETIME &time) {
       return (static_cast<std::uint64_t>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
@@ -57,10 +92,22 @@ namespace platf::window_target {
 
     /**
      * @brief Executable paths by process id and creation time, kept across polls.
+     *
+     * A cached entry is trusted for `process_revalidate_interval`; after that the process
+     * creation time is read again so a reused process id is noticed.
      */
     class process_cache_t {
     public:
       process_info_t query(const DWORD pid) {
+        const auto now = std::chrono::steady_clock::now();
+        {
+          std::lock_guard lock(_mutex);
+          if (const auto cached = _entries.find(pid);
+              cached != _entries.end() && now - cached->second.validated_at < process_revalidate_interval) {
+            return cached->second.info;
+          }
+        }
+
         process_info_t info;
         HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
         if (!process) {
@@ -77,9 +124,10 @@ namespace platf::window_target {
 
         if (info.created != 0) {
           std::lock_guard lock(_mutex);
-          if (const auto cached = _entries.find(pid); cached != _entries.end() && cached->second.created == info.created) {
+          if (const auto cached = _entries.find(pid); cached != _entries.end() && cached->second.info.created == info.created) {
             CloseHandle(process);
-            return cached->second;
+            cached->second.validated_at = now;
+            return cached->second.info;
           }
         }
 
@@ -99,14 +147,19 @@ namespace platf::window_target {
           if (_entries.size() >= max_cached_processes) {
             _entries.clear();
           }
-          _entries[pid] = info;
+          _entries[pid] = entry_t {info, now};
         }
         return info;
       }
 
     private:
+      struct entry_t {
+        process_info_t info;
+        std::chrono::steady_clock::time_point validated_at;
+      };
+
       std::mutex _mutex;
-      std::unordered_map<DWORD, process_info_t> _entries;
+      std::unordered_map<DWORD, entry_t> _entries;
     };
 
     process_cache_t &process_cache() {
@@ -216,6 +269,7 @@ namespace platf::window_target {
 
     struct enum_context_t {
       const std::optional<app_matcher_t> &matcher;
+      const std::vector<std::uintptr_t> *launch_windows;
       std::uint64_t launch_time;
       HWND foreground;
       DWORD own_pid;
@@ -272,6 +326,8 @@ namespace platf::window_target {
         .is_foreground = is_foreground,
         .iconic = iconic,
         .client_area = client_area,
+        .new_since_launch = context.launch_windows &&
+                            !std::binary_search(context.launch_windows->begin(), context.launch_windows->end(), reinterpret_cast<std::uintptr_t>(hwnd)),
       });
       return TRUE;
     }
@@ -345,8 +401,11 @@ namespace platf::window_target {
         client_origin.y + client.bottom,
       };
 
+      // Only a main window that can be maximized is sized to the display; dialogs and
+      // other owned or fixed windows are only moved.
       const auto style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-      const bool resizable = (style & WS_THICKFRAME) != 0;
+      const bool resizable = (style & WS_THICKFRAME) != 0 && (style & WS_MAXIMIZEBOX) != 0 &&
+                             GetWindow(hwnd, GW_OWNER) == nullptr;
       const auto plan = window_policy::plan_placement(
         to_rect_i(output),
         to_rect_i(window_rect),
@@ -410,7 +469,16 @@ namespace platf::window_target {
     }
   }  // namespace
 
-  void mark_launch() {
+  void mark_launch(const bool snapshot_windows) {
+    std::shared_ptr<const std::vector<std::uintptr_t>> windows;
+    if (snapshot_windows) {
+      windows = std::make_shared<const std::vector<std::uintptr_t>>(visible_top_level_windows());
+    }
+    {
+      std::lock_guard lock(g_launch_windows_mutex);
+      g_launch_windows = std::move(windows);
+    }
+
     FILETIME now {};
     GetSystemTimeAsFileTime(&now);
     g_launch_time.store(filetime_ticks(now), std::memory_order_release);
@@ -427,9 +495,11 @@ namespace platf::window_target {
 
   std::uintptr_t choose(std::uintptr_t current) {
     const auto selection = current_app_selection();
+    const auto windows_at_launch = launch_windows();
 
     enum_context_t context {
       .matcher = selection.matcher,
+      .launch_windows = windows_at_launch.get(),
       .launch_time = filetime_ticks(launch_time()),
       .foreground = GetForegroundWindow(),
       .own_pid = GetCurrentProcessId(),

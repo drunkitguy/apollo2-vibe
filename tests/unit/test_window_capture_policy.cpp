@@ -238,6 +238,38 @@ TEST(WindowCapturePolicy, LaunchedAppModeOnlyAcceptsWindowsStartedAfterTheLaunch
   EXPECT_EQ(choose_target(candidates, 2, selection_mode_e::launched_app), 3u);
 }
 
+TEST(WindowCapturePolicy, LaunchedAppModeAcceptsANewWindowOfAnOldProcess) {
+  // steam://open/bigpicture: the running Steam client opens the Big Picture window.
+  auto big_picture = candidate(2, 2'073'600, false, true);
+  big_picture.new_since_launch = true;
+  const std::array candidates {
+    candidate(1, 4'000'000, false),
+    big_picture,
+  };
+
+  EXPECT_EQ(choose_target(candidates, 0, selection_mode_e::launched_app), 2u);
+}
+
+TEST(WindowCapturePolicy, LaunchedAppModeRejectsAnOldWindowOfAnOldProcess) {
+  const std::array candidates {
+    candidate(1, 4'000'000, false, true),
+  };
+
+  EXPECT_EQ(choose_target(candidates, 0, selection_mode_e::launched_app), 0u);
+  EXPECT_EQ(choose_target(candidates, 1, selection_mode_e::launched_app), 0u);
+}
+
+TEST(WindowCapturePolicy, AppMatcherModeIgnoresNewWindowsOfUnrelatedOldProcesses) {
+  auto chat_popup = candidate(2, 500'000, false, true);
+  chat_popup.new_since_launch = true;
+  const std::array candidates {
+    candidate(1, 2'073'600),
+    chat_popup,
+  };
+
+  EXPECT_EQ(choose_target(candidates, 1, selection_mode_e::app_matcher), 1u);
+}
+
 TEST(WindowCapturePolicy, LaunchedAppModeNeverFollowsPreexistingForegroundWindows) {
   const std::array candidates {
     candidate(1, 2'073'600, false, true),

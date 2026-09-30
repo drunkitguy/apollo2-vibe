@@ -1930,8 +1930,9 @@ namespace proc {
     _env["APOLLO_APP_STATUS"] = "RUNNING";
 
 #ifdef _WIN32
-    // Windows of processes created from here on belong to the app (window-only capture).
-    platf::window_target::mark_launch();
+    // Windows of processes created from here on, and windows that appear from here on,
+    // belong to the app (window-only capture).
+    platf::window_target::mark_launch(_launch_session && _launch_session->window_only);
 #endif
 
     for (auto &cmd : _app.detached) {

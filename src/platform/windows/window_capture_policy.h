@@ -75,6 +75,7 @@ namespace platf::dxgi::window_policy {
     bool is_foreground;
     bool iconic;
     std::int64_t client_area;
+    bool new_since_launch = false;  ///< The window was not visible when the app was launched.
   };
 
   /**
@@ -90,7 +91,7 @@ namespace platf::dxgi::window_policy {
    */
   enum class selection_mode_e : std::uint8_t {
     app_matcher,  ///< Windows of the tracked app, plus windows of processes started after the launch.
-    launched_app,  ///< The app has a command but cannot be tracked (URL or detached launch): only windows of processes started after the launch.
+    launched_app,  ///< The app has a command but cannot be tracked (URL or detached launch): only windows that appeared, or whose process started, after the launch.
     desktop,  ///< No app command (the Desktop app, or nothing running): follow the foreground window.
   };
 
@@ -127,7 +128,9 @@ namespace platf::dxgi::window_policy {
           case selection_mode_e::app_matcher:
             return c.matches_app || c.started_after_launch;
           case selection_mode_e::launched_app:
-            return c.started_after_launch;
+            // A URL can open a new window in a launcher that was already running
+            // (steam://open/bigpicture), so a new window counts even from an old process.
+            return c.started_after_launch || c.new_since_launch;
           case selection_mode_e::desktop:
             return true;
         }

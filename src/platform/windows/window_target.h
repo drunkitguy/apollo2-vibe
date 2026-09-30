@@ -23,8 +23,11 @@ namespace platf::window_target {
 
   /**
    * @brief Record the start of an app launch. Windows of processes created later count as the app's.
+   * @param snapshot_windows Also remember which top-level windows are visible now, so a window
+   * that appears later counts as new even when its process is older (a URL opening a window in a
+   * launcher that is already running). Only window-only sessions need it.
    */
-  void mark_launch();
+  void mark_launch(bool snapshot_windows);
 
   /**
    * @brief Time of the last app launch, or zero when none was recorded.
