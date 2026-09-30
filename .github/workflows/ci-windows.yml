@@ -27,6 +27,10 @@ on:
         required: false
         type: boolean
         default: true
+      run_window_only_tests:
+        required: false
+        type: boolean
+        default: false
       release_artifact_retention_days:
         required: false
         type: number
@@ -496,6 +500,18 @@ jobs:
             tests/unit/platform/windows/test_native_amf_review.cpp \
             -o build/native-amf-lifecycle-test.exe
           ./build/native-amf-lifecycle-test.exe
+
+      - name: Test window-only capture policy
+        if: inputs.run_window_only_tests && inputs.build_tests
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          test_exe="$(find build -type f -name 'test_component_window_capture_policy.exe' -print -quit)"
+          if [[ -z "${test_exe}" ]]; then
+            echo "::error::test_component_window_capture_policy.exe was not built" >&2
+            exit 1
+          fi
+          "${test_exe}"
 
       - name: Install cv2pdb
         if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact

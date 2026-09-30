@@ -12,43 +12,33 @@ on:
       - 'tools/**'
       - 'tests/**'
       - 'cmake/**'
+      - 'packaging/**'
+      - 'third-party/**'
+      - 'CMakeLists.txt'
+      - '.github/actions/**'
+      - '.github/workflows/ci-windows.yml'
       - '.github/window-only-host-version.txt'
       - '.github/workflows/window-only-release.yml'
 
-concurrency:
-  group: window-only-release-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  windows:
-    name: Windows
-    permissions:
-      actions: read
-      contents: read
-    uses: ./.github/workflows/ci-windows.yml
-    with:
-      build_only: false
-      build_tests: true
-      release_commit: ${{ github.sha }}
-      release_version: 0.0.0
-      release_artifact_retention_days: 7
-      symbol_product_name: Vibepollo
-      symbol_release_prefix: polo
-      publish_symbols: false
-      require_truehdr_runtime: false
-
-  release:
-    name: Release
-    needs: windows
+  check:
+    name: Check release
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      asset: ${{ steps.version.outputs.asset }}
+      publish: ${{ steps.version.outputs.publish }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
+          sparse-checkout: .github/window-only-host-version.txt
+          sparse-checkout-cone-mode: false
 
       - name: Resolve version
         id: version
@@ -61,30 +51,85 @@ jobs:
             exit 1
           fi
           tag="window-host-v${version}"
+          asset="Vibepollo-WindowOnly-${version}.msi"
           {
             echo "version=${version}"
             echo "tag=${tag}"
+            echo "asset=${asset}"
           } >> "${GITHUB_OUTPUT}"
-          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
-            echo "Release ${tag} already exists; nothing to publish."
-            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name' 2> /dev/null |
+            grep -Fxq "${asset}"; then
+            echo "Release ${tag} already has ${asset}; skipping the build. Bump .github/window-only-host-version.txt for a new release."
+            echo "publish=false" >> "${GITHUB_OUTPUT}"
           else
-            echo "exists=false" >> "${GITHUB_OUTPUT}"
+            echo "publish=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+  windows:
+    name: Windows
+    needs: check
+    if: needs.check.outputs.publish == 'true'
+    # A newer push supersedes a build in progress; publishing has its own group below.
+    concurrency:
+      group: window-only-build-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/ci-windows.yml
+    with:
+      build_only: false
+      build_tests: true
+      run_window_only_tests: true
+      release_commit: ${{ github.sha }}
+      release_version: ${{ needs.check.outputs.version }}
+      release_artifact_retention_days: 7
+      symbol_product_name: Vibepollo
+      symbol_release_prefix: polo
+      publish_symbols: false
+      require_truehdr_runtime: false
+
+  release:
+    name: Release
+    needs: [check, windows]
+    if: needs.check.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Never cancelled midway, so a release is never left without its MSI.
+    concurrency:
+      group: window-only-publish-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - name: Check release again
+        id: recheck
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+          ASSET: ${{ needs.check.outputs.asset }}
+        run: |
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name' 2> /dev/null |
+            grep -Fxq "${ASSET}"; then
+            echo "Release ${TAG} already has ${ASSET}; nothing to publish."
+            echo "publish=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "publish=true" >> "${GITHUB_OUTPUT}"
           fi
 
       # The package artifact is a regular archive holding the MSI; the SignPath
       # upload uses archive: false and is named after the file instead.
       - name: Download MSI
-        if: steps.version.outputs.exists == 'false'
+        if: steps.recheck.outputs.publish == 'true'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
         with:
           name: unsigned-msi-package-Windows
           path: artifact
 
       - name: Prepare release files
-        if: steps.version.outputs.exists == 'false'
+        if: steps.recheck.outputs.publish == 'true'
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          ASSET: ${{ needs.check.outputs.asset }}
         run: |
           mapfile -t msis < <(find artifact -type f -name '*.msi')
           if (( ${#msis[@]} != 1 )); then
@@ -92,18 +137,18 @@ jobs:
             exit 1
           fi
           mkdir -p dist
-          name="Vibepollo-WindowOnly-${VERSION}.msi"
+          name="${ASSET}"
           cp "${msis[0]}" "dist/${name}"
           (cd dist && sha256sum "${name}" > "${name}.sha256")
           ls -l dist
 
       - name: Publish release
-        if: steps.version.outputs.exists == 'false'
-        uses: softprops/action-gh-release@v2
+        if: steps.recheck.outputs.publish == 'true'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
+          tag_name: ${{ needs.check.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          name: Vibepollo window-only host ${{ steps.version.outputs.version }}
+          name: Vibepollo window-only host ${{ needs.check.outputs.version }}
           files: dist/*
           fail_on_unmatched_files: true
           make_latest: true
@@ -113,7 +158,7 @@ jobs:
 
             ## Install
 
-            1. Install `Vibepollo-WindowOnly-${{ steps.version.outputs.version }}.msi` on the Windows PC. The MSI is not code signed, so SmartScreen may warn: choose "More info", then "Run anyway". The `.sha256` file lets you check the download.
+            1. Install `Vibepollo-WindowOnly-${{ needs.check.outputs.version }}.msi` on the Windows PC. The MSI is not code signed, so SmartScreen may warn: choose "More info", then "Run anyway". The `.sha256` file lets you check the download.
             2. Pair it with the Vibe Window Android client from https://github.com/drunkitguy/vibe-window/releases and keep "Show only the app window" turned on in the client settings.
 
             Clients that do not send the window-only flag stream the whole display exactly as before.
@@ -125,5 +170,6 @@ jobs:
             - UAC prompts and the lock screen are shown as the secure desktop so they can be answered; the stream returns to the window afterwards.
             - Switching from a launcher to the game window freezes the picture for about a second while capture restarts.
             - Audio is still the whole system mix.
+            - A window-only stream and a regular stream cannot run at the same time; the host refuses the second one.
 
             Source code is in this repository under GPL-3.0.
