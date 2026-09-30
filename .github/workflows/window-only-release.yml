@@ -1,0 +1,129 @@
+---
+name: Window-only release
+permissions: {}
+
+on:
+  push:
+    branches:
+      - claude/clever-clarke-k7hhhj
+      - vibepollo-base
+    paths:
+      - 'src/**'
+      - 'tools/**'
+      - 'tests/**'
+      - 'cmake/**'
+      - '.github/window-only-host-version.txt'
+      - '.github/workflows/window-only-release.yml'
+
+concurrency:
+  group: window-only-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/ci-windows.yml
+    with:
+      build_only: false
+      build_tests: true
+      release_commit: ${{ github.sha }}
+      release_version: 0.0.0
+      release_artifact_retention_days: 7
+      symbol_product_name: Vibepollo
+      symbol_release_prefix: polo
+      publish_symbols: false
+      require_truehdr_runtime: false
+
+  release:
+    name: Release
+    needs: windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Resolve version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(tr -d '[:space:]' < .github/window-only-host-version.txt)"
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::.github/window-only-host-version.txt must hold a version such as 1.0.0" >&2
+            exit 1
+          fi
+          tag="window-host-v${version}"
+          {
+            echo "version=${version}"
+            echo "tag=${tag}"
+          } >> "${GITHUB_OUTPUT}"
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
+            echo "Release ${tag} already exists; nothing to publish."
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      # The package artifact is a regular archive holding the MSI; the SignPath
+      # upload uses archive: false and is named after the file instead.
+      - name: Download MSI
+        if: steps.version.outputs.exists == 'false'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131  # v7.0.0
+        with:
+          name: unsigned-msi-package-Windows
+          path: artifact
+
+      - name: Prepare release files
+        if: steps.version.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mapfile -t msis < <(find artifact -type f -name '*.msi')
+          if (( ${#msis[@]} != 1 )); then
+            echo "::error::Expected exactly one MSI in the artifact, found ${#msis[@]}" >&2
+            exit 1
+          fi
+          mkdir -p dist
+          name="Vibepollo-WindowOnly-${VERSION}.msi"
+          cp "${msis[0]}" "dist/${name}"
+          (cd dist && sha256sum "${name}" > "${name}.sha256")
+          ls -l dist
+
+      - name: Publish release
+        if: steps.version.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Vibepollo window-only host ${{ steps.version.outputs.version }}
+          files: dist/*
+          fail_on_unmatched_files: true
+          make_latest: true
+          generate_release_notes: false
+          body: |
+            Vibepollo host build with window-only capture. When a client asks for it, the stream shows only the window of the app launched from the client. The Windows desktop, taskbar, notifications and other windows are replaced by black.
+
+            ## Install
+
+            1. Install `Vibepollo-WindowOnly-${{ steps.version.outputs.version }}.msi` on the Windows PC. The MSI is not code signed, so SmartScreen may warn: choose "More info", then "Run anyway". The `.sha256` file lets you check the download.
+            2. Pair it with the Vibe Window Android client from https://github.com/drunkitguy/vibe-window/releases and keep "Show only the app window" turned on in the client settings.
+
+            Clients that do not send the window-only flag stream the whole display exactly as before.
+
+            ## Known limitations
+
+            - Only the app's main window is shown. Menus, dropdowns and other popup windows of the app are not visible.
+            - Games in legacy exclusive fullscreen may produce no picture. Use borderless or windowed fullscreen.
+            - UAC prompts and the lock screen are shown as the secure desktop so they can be answered; the stream returns to the window afterwards.
+            - Switching from a launcher to the game window freezes the picture for about a second while capture restarts.
+            - Audio is still the whole system mix.
+
+            Source code is in this repository under GPL-3.0.
