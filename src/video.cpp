@@ -2648,6 +2648,17 @@ namespace video {
     refresh_displays(dev_type, display_names, current_display_index, empty_str);
   }
 
+  /**
+   * @brief Log why a session that cannot share the running capture is shut down.
+   * @param session_window_only Capture mode the refused session asked for.
+   */
+  void refuse_mixed_window_only_session(const bool session_window_only) {
+    BOOST_LOG(warning) << (session_window_only ?
+                             "Refusing a window-only session while a full-display capture is running"sv :
+                             "Refusing a full-display session while a window-only capture is running"sv)
+                       << "; end the other stream first"sv;
+  }
+
   void captureThread(
     std::shared_ptr<safe::queue_t<capture_ctx_t>> capture_ctx_queue,
     sync_util::sync_t<std::weak_ptr<platf::display_t>> &display_wp,
@@ -2676,6 +2687,9 @@ namespace video {
       return;
     }
     capture_ctxs.emplace_back(std::move(*initial_capture_ctx));
+    // A window-only capture shows one window and a regular capture the whole display; a
+    // session asking for the other mode must not share this capture.
+    const bool capture_window_only = capture_ctxs.front().config.window_only;
 
     std::vector<std::string> display_names;
     int display_p = -1;
@@ -2883,7 +2897,13 @@ namespace video {
         }
 
         while (capture_ctx_queue->peek()) {
-          capture_ctxs.emplace_back(std::move(*capture_ctx_queue->pop()));
+          auto capture_ctx = std::move(*capture_ctx_queue->pop());
+          if (capture_ctx.config.window_only != capture_window_only) {
+            refuse_mixed_window_only_session(capture_ctx.config.window_only);
+            capture_ctx.images->stop();
+            continue;
+          }
+          capture_ctxs.emplace_back(std::move(capture_ctx));
         }
 
         if (switch_display_event->peek()) {
@@ -5313,6 +5333,8 @@ namespace video {
     if (!disp) {
       return encode_e::error;
     }
+    // Sessions joining later must use the same capture mode as this display.
+    const bool display_window_only = synced_session_ctxs.front()->config.window_only;
 
     auto img = disp->alloc_img();
     if (!img || disp->dummy_img(img.get())) {
@@ -5336,6 +5358,12 @@ namespace video {
           auto encode_session_ctx = encode_session_ctx_queue.pop();
           if (!encode_session_ctx) {
             return false;
+          }
+          if (encode_session_ctx->config.window_only != display_window_only) {
+            refuse_mixed_window_only_session(encode_session_ctx->config.window_only);
+            encode_session_ctx->shutdown_event->raise(true);
+            encode_session_ctx->join_event->raise(true);
+            continue;
           }
 
           synced_session_ctxs.emplace_back(std::make_unique<sync_session_ctx_t>(std::move(*encode_session_ctx)));
