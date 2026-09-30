@@ -519,6 +519,8 @@ jobs:
         shell: msys2 {0}
         run: |
           set -uo pipefail
+          # The msys2 shell wrapper runs bash with -e; this step checks exit codes itself.
+          set +e
 
           smoke_root="$(cygpath -u "${RUNNER_TEMP}")/sunshine-smoke"
           rm -rf "${smoke_root}"
@@ -613,8 +615,16 @@ jobs:
             echo "update_check_interval = 0"
           } > "${smoke_root}/sunshine.conf"
           run_smoke sunshine "$(cygpath -m build/sunshine.exe)" "${smoke_root_win}/sunshine.conf"
-          echo "::group::sunshine.log"
-          tail -n 200 "${smoke_root}/sunshine.log" 2> /dev/null || echo "sunshine.log was not written"
+          # Sunshine writes per-session files next to log_path (logs/sunshine-<time>.log).
+          mapfile -t sunshine_logs < <(find "${smoke_root}" -name 'sunshine*.log' -type f 2> /dev/null)
+          echo "::group::sunshine log (${#sunshine_logs[@]} file(s))"
+          if (( ${#sunshine_logs[@]} == 0 )); then
+            echo "sunshine.exe wrote no log"
+          fi
+          for log_file in "${sunshine_logs[@]}"; do
+            echo "== ${log_file}"
+            tr -d '\000' < "${log_file}" | tail -n 200
+          done
           echo "::endgroup::"
           if [[ "${smoke_rc}" -ne 124 ]]; then
             echo "::error::sunshine.exe exited within ${smoke_seconds} s of starting (gdb exit ${smoke_rc}); see the backtrace above." >&2
