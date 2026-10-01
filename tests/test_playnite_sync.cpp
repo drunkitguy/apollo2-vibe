@@ -122,3 +122,131 @@ TEST(PlayniteSync_ArtPolicy, ReconvertOnlyWhenCacheDoesNotDescribeSource) {
   EXPECT_TRUE(should_reconvert_playnite_image(true, "cover-a|12|100", "cover-b|12|1"));
   EXPECT_TRUE(should_reconvert_playnite_image(true, "cover-a|12|100", ""));
 }
+
+static Game platform_game(std::vector<PlatformRef> platforms, bool emulated = false, std::vector<std::string> emulator_platforms = {}, std::string builtin_id = {}, std::string emulator_name = {}) {
+  Game g;
+  g.id = "example-id";
+  g.name = "Example Game";
+  g.installed = true;
+  g.has_platform_info = true;
+  g.platforms = std::move(platforms);
+  g.emulated = emulated;
+  g.emulator_platforms = std::move(emulator_platforms);
+  g.emulator_builtin_id = std::move(builtin_id);
+  g.emulator_name = std::move(emulator_name);
+  return g;
+}
+
+TEST(PlayniteSync_DerivePlatform, OldConnectorGivesNothing) {
+  Game g;
+  g.id = "example-id";
+  g.name = "Example Game";
+  g.emulated = true;  // ignored without platform info
+  g.platforms = {{"Nintendo Switch", "nintendo_switch"}};
+  EXPECT_TRUE(derive_platform(g).empty());
+}
+
+TEST(PlayniteSync_DerivePlatform, EmulatedMultiPlatformGamePrefersEmulatorPlatform) {
+  // Metadata sources often attach PC and several consoles to one game.
+  auto g = platform_game({{"PC (Windows)", "pc_windows"}, {"Nintendo 3DS", "nintendo_3ds"}, {"Nintendo Switch", "nintendo_switch"}}, true, {"nintendo_switch"}, "ryujinx", "Example Emulator");
+  const auto guess = derive_platform(g);
+  EXPECT_EQ(guess.name, "Nintendo Switch");
+  EXPECT_EQ(guess.spec_id, "nintendo_switch");
+}
+
+TEST(PlayniteSync_DerivePlatform, NativeGameWithPcAndConsolePlatformsIsPc) {
+  auto g = platform_game({{"Nintendo Switch", "nintendo_switch"}, {"PC (Windows)", "pc_windows"}});
+  const auto guess = derive_platform(g);
+  EXPECT_EQ(guess.name, "PC (Windows)");
+  EXPECT_EQ(guess.spec_id, "pc_windows");
+}
+
+TEST(PlayniteSync_DerivePlatform, NativeGameWithoutPlatformsIsPc) {
+  const auto guess = derive_platform(platform_game({}));
+  EXPECT_EQ(guess.name, "PC (Windows)");
+  EXPECT_EQ(guess.spec_id, "pc_windows");
+}
+
+TEST(PlayniteSync_DerivePlatform, NativeGameKeepsItsOnlyPlatform) {
+  const auto guess = derive_platform(platform_game({{"PC (DOS)", "pc_dos"}}));
+  EXPECT_EQ(guess.name, "PC (DOS)");
+  EXPECT_EQ(guess.spec_id, "pc_dos");
+}
+
+TEST(PlayniteSync_DerivePlatform, EmulatedGameSkipsPcPlatformWhenEmulatorPlatformsDoNotMatch) {
+  auto g = platform_game({{"PC (Windows)", "pc_windows"}, {"Sony PlayStation 2", "sony_playstation2"}}, true, {"nintendo_gamecube"});
+  const auto guess = derive_platform(g);
+  EXPECT_EQ(guess.name, "Sony PlayStation 2");
+  EXPECT_EQ(guess.spec_id, "sony_playstation2");
+}
+
+TEST(PlayniteSync_DerivePlatform, EmulatedGameSkipsCustomPcPlatformName) {
+  auto g = platform_game({{"PC", ""}, {"Example Console", ""}}, true);
+  const auto guess = derive_platform(g);
+  EXPECT_EQ(guess.name, "Example Console");
+  EXPECT_TRUE(guess.spec_id.empty());
+}
+
+TEST(PlayniteSync_DerivePlatform, EmulatedGameWithoutPlatformsUsesEmulatorPlatform) {
+  const auto guess = derive_platform(platform_game({}, true, {"nintendo_gamecube", "nintendo_wii"}));
+  EXPECT_EQ(guess.name, "Nintendo GameCube");
+  EXPECT_EQ(guess.spec_id, "nintendo_gamecube");
+}
+
+TEST(PlayniteSync_DerivePlatform, EmulatorPlatformNamesFromCustomProfiles) {
+  const auto custom = derive_platform(platform_game({}, true, {"Example Handheld"}));
+  EXPECT_EQ(custom.name, "Example Handheld");
+  EXPECT_TRUE(custom.spec_id.empty());
+  const auto unknown_spec = derive_platform(platform_game({}, true, {"example_system"}));
+  EXPECT_EQ(unknown_spec.name, "Example System");
+  EXPECT_EQ(unknown_spec.spec_id, "example_system");
+}
+
+TEST(PlayniteSync_DerivePlatform, KnownEmulatorsByBuiltInIdOrName) {
+  struct expectation_t {
+    std::string builtin_id;
+    std::string name;
+    std::string spec_id;
+    std::string display;
+  };
+
+  const std::vector<expectation_t> cases {
+    {"ryujinx", "", "nintendo_switch", "Nintendo Switch"},
+    {"", "Eden", "nintendo_switch", "Nintendo Switch"},
+    {"", "Citron", "nintendo_switch", "Nintendo Switch"},
+    {"citra", "", "nintendo_3ds", "Nintendo 3DS"},
+    {"", "Azahar", "nintendo_3ds", "Nintendo 3DS"},
+    {"dolphin", "", "nintendo_gamecube", "Nintendo GameCube"},
+    {"cemu", "", "nintendo_wiiu", "Nintendo Wii U"},
+    {"pcsx2", "", "sony_playstation2", "Sony PlayStation 2"},
+    {"rpcs3", "", "sony_playstation3", "Sony PlayStation 3"},
+    {"duckstation", "", "sony_playstation", "Sony PlayStation"},
+    {"ppsspp", "", "sony_psp", "Sony PlayStation Portable"},
+    {"", "melonDS", "nintendo_ds", "Nintendo DS"},
+    {"mgba", "", "nintendo_gameboyadvance", "Nintendo Game Boy Advance"},
+  };
+  for (const auto &c : cases) {
+    const auto guess = derive_platform(platform_game({}, true, {}, c.builtin_id, c.name));
+    EXPECT_EQ(guess.spec_id, c.spec_id) << c.builtin_id << c.name;
+    EXPECT_EQ(guess.name, c.display) << c.builtin_id << c.name;
+  }
+}
+
+TEST(PlayniteSync_DerivePlatform, UnknownEmulatorFallsBackToEmulated) {
+  const auto guess = derive_platform(platform_game({}, true, {}, "", "Example Emulator"));
+  EXPECT_EQ(guess.name, "Emulated");
+  EXPECT_TRUE(guess.spec_id.empty());
+}
+
+TEST(PlayniteSync_DerivePlatform, PlatformWithOnlySpecIdGetsDisplayName) {
+  const auto guess = derive_platform(platform_game({{"", "nintendo_wiiu"}}, true, {"nintendo_wiiu"}));
+  EXPECT_EQ(guess.name, "Nintendo Wii U");
+  EXPECT_EQ(guess.spec_id, "nintendo_wiiu");
+}
+
+TEST(PlayniteSync_DerivePlatform, DisplayNames) {
+  EXPECT_EQ(platform_display_name("nintendo_3ds"), "Nintendo 3DS");
+  EXPECT_EQ(platform_display_name("SONY_PLAYSTATION2"), "Sony PlayStation 2");
+  EXPECT_EQ(platform_display_name("example_system"), "Example System");
+  EXPECT_EQ(platform_display_name(""), "");
+}

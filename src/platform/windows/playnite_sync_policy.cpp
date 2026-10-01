@@ -98,6 +98,213 @@ namespace platf::playnite::sync::policy {
       } catch (...) {}
     }
 
+    struct platform_name_t {
+      std::string_view spec_id;
+      std::string_view name;
+    };
+
+    // Playnite's built-in platform list (source/Playnite/Emulation/Platforms.yaml).
+    constexpr platform_name_t kPlatformNames[] = {
+      {"3do", "3DO Interactive Multiplayer"},
+      {"adobe_flash", "Adobe Flash"},
+      {"amstrad_cpc", "Amstrad CPC"},
+      {"apple_2", "Apple II"},
+      {"arcade", "Arcade"},
+      {"arduboy", "Arduboy"},
+      {"atari_2600", "Atari 2600"},
+      {"atari_5200", "Atari 5200"},
+      {"atari_7800", "Atari 7800"},
+      {"atari_8bit", "Atari 8-bit"},
+      {"atari_falcon030", "Atari Falcon030"},
+      {"atari_jaguar", "Atari Jaguar"},
+      {"atari_lynx", "Atari Lynx"},
+      {"atari_st", "Atari ST/STE"},
+      {"bandai_wonderswan_color", "Bandai WonderSwan Color"},
+      {"bandai_wonderswan", "Bandai WonderSwan"},
+      {"coleco_vision", "Coleco ColecoVision"},
+      {"commodore_64", "Commodore 64"},
+      {"commodore_amiga_cd32", "Commodore Amiga CD32"},
+      {"commodore_amiga", "Commodore Amiga"},
+      {"commodore_cbm5x0", "Commodore CBM-5x0"},
+      {"commodore_cbm2", "Commodore CBM-II"},
+      {"commodore_pet", "Commodore PET"},
+      {"commodore_plus4", "Commodore Plus/4"},
+      {"commodore_vci20", "Commodore VIC20"},
+      {"fairchild_channelf", "Fairchild Channel F"},
+      {"vectrex", "GCE Vectrex"},
+      {"macintosh", "Macintosh"},
+      {"magnavox_odyssey_2", "Magnavox Odyssey 2"},
+      {"mattel_intellivision", "Mattel Intellivision"},
+      {"megaduck", "Mega Duck"},
+      {"microsoft_msx", "Microsoft MSX"},
+      {"microsoft_msx2", "Microsoft MSX2"},
+      {"xbox360", "Microsoft Xbox 360"},
+      {"xbox_one", "Microsoft Xbox One"},
+      {"xbox_series", "Microsoft Xbox Series"},
+      {"xbox", "Microsoft Xbox"},
+      {"nec_pc88", "NEC PC-88"},
+      {"nec_pc98", "NEC PC-98"},
+      {"nec_pcfx", "NEC PC-FX"},
+      {"nec_supergrafx", "NEC SuperGrafx"},
+      {"nec_turbografx_16", "NEC TurboGrafx 16"},
+      {"nec_turbografx_cd", "NEC TurboGrafx-CD"},
+      {"nintendo_3ds", "Nintendo 3DS"},
+      {"nintendo_64", "Nintendo 64"},
+      {"nintendo_ds", "Nintendo DS"},
+      {"nintendo_dsi", "Nintendo DSi"},
+      {"nintendo_nes", "Nintendo Entertainment System"},
+      {"nintendo_famicom_disk", "Nintendo Family Computer Disk System"},
+      {"nintendo_gameandwatch", "Nintendo Game & Watch"},
+      {"nintendo_gameboyadvance", "Nintendo Game Boy Advance"},
+      {"nintendo_gameboycolor", "Nintendo Game Boy Color"},
+      {"nintendo_gameboy", "Nintendo Game Boy"},
+      {"nintendo_gamecube", "Nintendo GameCube"},
+      {"nintendo_super_nes", "Nintendo SNES"},
+      {"nintendo_switch", "Nintendo Switch"},
+      {"nintendo_switch2", "Nintendo Switch 2"},
+      {"nintendo_virtualboy", "Nintendo Virtual Boy"},
+      {"nintendo_wiiu", "Nintendo Wii U"},
+      {"nintendo_wii", "Nintendo Wii"},
+      {"pc_dos", "PC (DOS)"},
+      {"pc_linux", "PC (Linux)"},
+      {"pc_windows", "PC (Windows)"},
+      {"sega_32x", "Sega 32X"},
+      {"sega_cd", "Sega CD"},
+      {"sega_dreamcast", "Sega Dreamcast"},
+      {"sega_gamegear", "Sega Game Gear"},
+      {"sega_genesis", "Sega Genesis"},
+      {"sega_mastersystem", "Sega Master System"},
+      {"sega_saturn", "Sega Saturn"},
+      {"sega_sg1000", "Sega SG-1000"},
+      {"sharp_x1", "Sharp X1"},
+      {"sharp_x68000", "Sharp X68000"},
+      {"sinclair_zxspectrum3", "Sinclair ZX Spectrum +3"},
+      {"sinclair_zxspectrum", "Sinclair ZX Spectrum"},
+      {"sinclair_zx81", "Sinclair ZX81"},
+      {"snk_neogeo_aes", "SNK Neo Geo AES"},
+      {"snk_neogeo_cd", "SNK Neo Geo CD"},
+      {"snk_neogeopocket_color", "SNK Neo Geo Pocket Color"},
+      {"snk_neogeopocket", "SNK Neo Geo Pocket"},
+      {"sony_playstation2", "Sony PlayStation 2"},
+      {"sony_playstation3", "Sony PlayStation 3"},
+      {"sony_playstation4", "Sony PlayStation 4"},
+      {"sony_playstation5", "Sony PlayStation 5"},
+      {"sony_psp", "Sony PlayStation Portable"},
+      {"sony_vita", "Sony PlayStation Vita"},
+      {"sony_playstation", "Sony PlayStation"},
+      {"ti_83", "Texas Instruments TI-83"},
+      {"thomson_mo5", "Thomson MO5"},
+      {"thomson_to7", "Thomson TO7"},
+      {"tic_80", "TIC-80"},
+      {"uzebox", "Uzebox"},
+      {"wasm4", "WASM-4"},
+      {"watara_supervision", "Watara Supervision"},
+      {"philips_cdi", "Philips CD-i"},
+      {"pokemon_mini", "Pokemon mini"},
+    };
+
+    struct emulator_platform_t {
+      std::string_view token;
+      std::string_view spec_id;
+    };
+
+    // Last resort for emulated games whose emulator reported no platforms:
+    // well-known emulators matched against the built-in id or the name.
+    constexpr emulator_platform_t kEmulatorPlatforms[] = {
+      {"ryujinx", "nintendo_switch"},
+      {"yuzu", "nintendo_switch"},
+      {"suyu", "nintendo_switch"},
+      {"sudachi", "nintendo_switch"},
+      {"citron", "nintendo_switch"},
+      {"eden", "nintendo_switch"},
+      {"citra", "nintendo_3ds"},
+      {"azahar", "nintendo_3ds"},
+      {"lime3ds", "nintendo_3ds"},
+      {"dolphin", "nintendo_gamecube"},
+      {"cemu", "nintendo_wiiu"},
+      {"pcsx2", "sony_playstation2"},
+      {"rpcs3", "sony_playstation3"},
+      {"duckstation", "sony_playstation"},
+      {"ppsspp", "sony_psp"},
+      {"melonds", "nintendo_ds"},
+      {"mgba", "nintendo_gameboyadvance"},
+      {"xemu", "xbox"},
+    };
+
+    std::string trim_copy(std::string_view value) {
+      const auto first = value.find_first_not_of(" \t\r\n");
+      if (first == std::string_view::npos) {
+        return {};
+      }
+      const auto last = value.find_last_not_of(" \t\r\n");
+      return std::string(value.substr(first, last - first + 1));
+    }
+
+    bool is_pc_platform(const PlatformRef &platform) {
+      const auto spec = to_lower_copy(trim_copy(platform.spec_id));
+      if (spec.rfind("pc_", 0) == 0) {
+        return true;
+      }
+      if (!spec.empty()) {
+        return false;
+      }
+      // Custom platforms have no spec id; recognize the usual PC names.
+      const auto name = to_lower_copy(trim_copy(platform.name));
+      return name == "pc" || name == "windows" || name.rfind("pc (", 0) == 0 || name.rfind("pc ", 0) == 0;
+    }
+
+    PlatformGuess guess_from_platform(const PlatformRef &platform) {
+      PlatformGuess guess {trim_copy(platform.name), trim_copy(platform.spec_id)};
+      if (guess.name.empty() && !guess.spec_id.empty()) {
+        guess.name = platform_display_name(guess.spec_id);
+      }
+      return guess;
+    }
+
+    PlatformGuess guess_from_emulator_platform(std::string_view value) {
+      const auto trimmed = trim_copy(value);
+      const auto lower = to_lower_copy(trimmed);
+      for (const auto &entry : kPlatformNames) {
+        if (entry.spec_id == lower) {
+          return {std::string(entry.name), std::string(entry.spec_id)};
+        }
+      }
+      // Custom emulator profiles may list platforms without a spec id; the
+      // connector sends the platform name instead.
+      const bool looks_like_spec_id = !lower.empty() && lower == trimmed &&
+                                      lower.find_first_of(" ()") == std::string::npos;
+      if (looks_like_spec_id) {
+        return {platform_display_name(lower), lower};
+      }
+      return {trimmed, {}};
+    }
+
+    void apply_platform_data(const Game &game, nlohmann::json &app) {
+      try {
+        // An outdated connector sends no platform data: keep whatever an
+        // earlier snapshot stored rather than erasing or guessing. The same
+        // applies when the derivation itself failed (empty guess). The manual
+        // "platform" key is never written here.
+        if (!game.has_platform_info) {
+          return;
+        }
+        const auto guess = derive_platform(game);
+        if (guess.empty()) {
+          return;
+        }
+        if (guess.name.empty()) {
+          app.erase("playnite-platform");
+        } else {
+          app["playnite-platform"] = guess.name;
+        }
+        if (guess.spec_id.empty()) {
+          app.erase("playnite-platform-id");
+        } else {
+          app["playnite-platform-id"] = guess.spec_id;
+        }
+      } catch (...) {}
+    }
+
     void apply_game_data(const Game &game, nlohmann::json &app) {
       try {
         if (!game.name.empty()) app["name"] = game.name;
@@ -117,6 +324,7 @@ namespace platf::playnite::sync::policy {
           app["playnite-plugin-name"] = game.plugin_name;
         }
       } catch (...) {}
+      apply_platform_data(game, app);
     }
 
     void dedupe_auto_apps_by_playnite_id(nlohmann::json &root, bool &changed) {
@@ -168,6 +376,104 @@ namespace platf::playnite::sync::policy {
       }
     }
   }  // namespace
+
+  std::string platform_display_name(std::string_view spec_id) {
+    const auto lower = to_lower_copy(trim_copy(spec_id));
+    for (const auto &entry : kPlatformNames) {
+      if (entry.spec_id == lower) {
+        return std::string(entry.name);
+      }
+    }
+    std::string name;
+    bool start_of_word = true;
+    for (const auto character : lower) {
+      if (character == '_' || character == '-' || character == ' ') {
+        if (!name.empty() && name.back() != ' ') {
+          name.push_back(' ');
+        }
+        start_of_word = true;
+        continue;
+      }
+      name.push_back(start_of_word ? static_cast<char>(std::toupper(static_cast<unsigned char>(character))) : character);
+      start_of_word = false;
+    }
+    while (!name.empty() && name.back() == ' ') {
+      name.pop_back();
+    }
+    return name;
+  }
+
+  PlatformGuess derive_platform(const Game &game) {
+    try {
+      if (!game.has_platform_info) {
+        return {};
+      }
+      if (game.emulated) {
+        // 1. A game platform the emulator runs. Metadata sources often add
+        //    several platforms (PC plus a console) to the same game.
+        std::vector<std::string> emulator_specs;
+        for (const auto &value : game.emulator_platforms) {
+          emulator_specs.push_back(to_lower_copy(trim_copy(value)));
+        }
+        for (const auto &platform : game.platforms) {
+          const auto spec = to_lower_copy(trim_copy(platform.spec_id));
+          const auto name = to_lower_copy(trim_copy(platform.name));
+          const bool runs = std::any_of(emulator_specs.begin(), emulator_specs.end(), [&](const auto &candidate) {
+            return !candidate.empty() && (candidate == spec || candidate == name);
+          });
+          if (runs) {
+            auto guess = guess_from_platform(platform);
+            if (!guess.empty()) {
+              return guess;
+            }
+          }
+        }
+        // 2. The first game platform that is not a PC platform.
+        for (const auto &platform : game.platforms) {
+          if (!is_pc_platform(platform)) {
+            auto guess = guess_from_platform(platform);
+            if (!guess.empty()) {
+              return guess;
+            }
+          }
+        }
+        // 3. The emulator's own first platform.
+        for (const auto &value : game.emulator_platforms) {
+          auto guess = guess_from_emulator_platform(value);
+          if (!guess.empty()) {
+            return guess;
+          }
+        }
+        // 4. A well-known emulator.
+        for (const auto &key : {to_lower_copy(game.emulator_builtin_id), to_lower_copy(game.emulator_name)}) {
+          if (key.empty()) {
+            continue;
+          }
+          for (const auto &entry : kEmulatorPlatforms) {
+            if (key.find(entry.token) != std::string::npos) {
+              return {platform_display_name(entry.spec_id), std::string(entry.spec_id)};
+            }
+          }
+        }
+        return {"Emulated", {}};
+      }
+
+      for (const auto &platform : game.platforms) {
+        if (to_lower_copy(trim_copy(platform.spec_id)) == "pc_windows") {
+          return guess_from_platform(platform);
+        }
+      }
+      for (const auto &platform : game.platforms) {
+        auto guess = guess_from_platform(platform);
+        if (!guess.empty()) {
+          return guess;
+        }
+      }
+      return {"PC (Windows)", "pc_windows"};
+    } catch (...) {
+      return {};
+    }
+  }
 
   std::string canonical_playnite_app_uuid(std::string_view playnite_id) {
     std::string uuid(playnite_id);

@@ -140,3 +140,124 @@ TEST(PlayniteProtocol_Parse, Status_ParsesFieldsWithUtf8Bom) {
   EXPECT_EQ(m.status_name, "gameStarted");
   EXPECT_EQ(m.status_game_id, "bom-id");
 }
+
+TEST(PlayniteProtocol_Platforms, NewConnectorPayloadIsParsed) {
+  std::string j = R"json({
+    "type":"games",
+    "payload":[{
+      "id":"g1",
+      "name":"Example Game",
+      "installed": true,
+      "platforms":[{"name":"PC (Windows)","specId":"pc_windows"},{"name":"Nintendo Switch","specId":"nintendo_switch"}],
+      "source":"Example Source",
+      "emulated": true,
+      "emulatorName":"Example Emulator",
+      "emulatorBuiltInId":"ryujinx",
+      "emulatorPlatforms":["nintendo_switch"]
+    }]
+  })json";
+  auto m = platf::playnite::parse(bytes(j));
+  ASSERT_EQ(m.type, MessageType::Games);
+  ASSERT_EQ(m.games.size(), 1u);
+  const auto &g = m.games[0];
+  EXPECT_TRUE(g.has_platform_info);
+  ASSERT_EQ(g.platforms.size(), 2u);
+  EXPECT_EQ(g.platforms[0].name, "PC (Windows)");
+  EXPECT_EQ(g.platforms[0].spec_id, "pc_windows");
+  EXPECT_EQ(g.platforms[1].name, "Nintendo Switch");
+  EXPECT_EQ(g.platforms[1].spec_id, "nintendo_switch");
+  EXPECT_EQ(g.source_name, "Example Source");
+  EXPECT_TRUE(g.emulated);
+  EXPECT_EQ(g.emulator_name, "Example Emulator");
+  EXPECT_EQ(g.emulator_builtin_id, "ryujinx");
+  ASSERT_EQ(g.emulator_platforms.size(), 1u);
+  EXPECT_EQ(g.emulator_platforms[0], "nintendo_switch");
+}
+
+TEST(PlayniteProtocol_Platforms, SingleElementArraysSerializedAsScalarsAreAccepted) {
+  // Windows PowerShell may turn a one-element array into the element itself.
+  std::string j = R"({
+    "type":"games",
+    "payload":[{
+      "id":"g1",
+      "name":"Example Game",
+      "platforms":{"name":"Nintendo 3DS","specId":"nintendo_3ds"},
+      "emulated": true,
+      "emulatorPlatforms":"nintendo_3ds"
+    },{
+      "id":"g2",
+      "name":"Example Game 2",
+      "platforms":["Custom System", 5, null, {"name":"","specId":""}]
+    }]
+  })";
+  auto m = platf::playnite::parse(bytes(j));
+  ASSERT_EQ(m.games.size(), 2u);
+  ASSERT_EQ(m.games[0].platforms.size(), 1u);
+  EXPECT_EQ(m.games[0].platforms[0].name, "Nintendo 3DS");
+  EXPECT_EQ(m.games[0].platforms[0].spec_id, "nintendo_3ds");
+  ASSERT_EQ(m.games[0].emulator_platforms.size(), 1u);
+  EXPECT_EQ(m.games[0].emulator_platforms[0], "nintendo_3ds");
+  ASSERT_EQ(m.games[1].platforms.size(), 1u);
+  EXPECT_EQ(m.games[1].platforms[0].name, "Custom System");
+  EXPECT_TRUE(m.games[1].platforms[0].spec_id.empty());
+}
+
+TEST(PlayniteProtocol_Platforms, OldConnectorPayloadHasNoPlatformInfo) {
+  std::string j = R"({
+    "type":"games",
+    "payload":[{"id":"g1","name":"Example Game","pluginName":"Example Library","installed":true}]
+  })";
+  auto m = platf::playnite::parse(bytes(j));
+  ASSERT_EQ(m.games.size(), 1u);
+  const auto &g = m.games[0];
+  EXPECT_FALSE(g.has_platform_info);
+  EXPECT_TRUE(g.platforms.empty());
+  EXPECT_TRUE(g.source_name.empty());
+  EXPECT_FALSE(g.emulated);
+  EXPECT_TRUE(g.emulator_name.empty());
+  EXPECT_TRUE(g.emulator_builtin_id.empty());
+  EXPECT_TRUE(g.emulator_platforms.empty());
+}
+
+TEST(PlayniteProtocol_Platforms, EmptyPlatformListStillMarksNewConnector) {
+  std::string j = R"({"type":"games","payload":[{"id":"g1","name":"Example Game","platforms":[]}]})";
+  auto m = platf::playnite::parse(bytes(j));
+  ASSERT_EQ(m.games.size(), 1u);
+  EXPECT_TRUE(m.games[0].has_platform_info);
+  EXPECT_TRUE(m.games[0].platforms.empty());
+}
+
+TEST(PlayniteProtocol_Platforms, MalformedPlatformFieldsNeverDropTheGame) {
+  std::string j = R"({
+    "type":"games",
+    "payload":[{
+      "id":"g1",
+      "name":"Example Game",
+      "platforms":42,
+      "source":null,
+      "emulated":"yes please",
+      "emulatorName":{"nested":true},
+      "emulatorBuiltInId":7,
+      "emulatorPlatforms":{"not":"a list"}
+    },{
+      "id":"g2",
+      "name":"Example Game 2",
+      "platforms":null,
+      "emulated":1
+    }]
+  })";
+  auto m = platf::playnite::parse(bytes(j));
+  ASSERT_EQ(m.type, MessageType::Games);
+  ASSERT_EQ(m.games.size(), 2u);
+  EXPECT_EQ(m.games[0].id, "g1");
+  EXPECT_TRUE(m.games[0].has_platform_info);
+  EXPECT_TRUE(m.games[0].platforms.empty());
+  EXPECT_TRUE(m.games[0].source_name.empty());
+  EXPECT_FALSE(m.games[0].emulated);
+  EXPECT_TRUE(m.games[0].emulator_name.empty());
+  EXPECT_TRUE(m.games[0].emulator_builtin_id.empty());
+  EXPECT_TRUE(m.games[0].emulator_platforms.empty());
+  EXPECT_EQ(m.games[1].id, "g2");
+  EXPECT_TRUE(m.games[1].has_platform_info);
+  EXPECT_TRUE(m.games[1].emulated);
+}

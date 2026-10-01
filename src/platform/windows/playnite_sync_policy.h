@@ -29,6 +29,35 @@ namespace platf::playnite::sync {
     const Game *g;
   };
 
+  /**
+   * @brief Platform derived for a Playnite game; both fields empty when unknown.
+   */
+  struct PlatformGuess {
+    std::string name;  ///< Display name, e.g. "Nintendo Switch".
+    std::string spec_id;  ///< Playnite specification id, e.g. "nintendo_switch"; may be empty.
+
+    bool empty() const {
+      return name.empty() && spec_id.empty();
+    }
+  };
+
+  /**
+   * @brief Derive the system a Playnite game belongs to.
+   *
+   * Returns an empty guess when the connector did not send platform data, so
+   * an outdated connector never mislabels emulated games as PC games. Emulated
+   * games prefer the emulator's platforms over metadata platforms, native
+   * games prefer "PC (Windows)".
+   */
+  PlatformGuess derive_platform(const Game &game);
+
+  /**
+   * @brief Display name for a Playnite platform specification id ("nintendo_3ds" gives "Nintendo 3DS").
+   *
+   * Unknown ids are turned into words ("example_system" gives "Example System").
+   */
+  std::string platform_display_name(std::string_view spec_id);
+
   // The runtime supplies image/cache enrichment here. The reconciliation
   // policy itself only mutates parsed game and apps.json data.
   using MetadataUpdater = void (*)(const Game &game, nlohmann::json &app);

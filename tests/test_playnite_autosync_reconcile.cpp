@@ -239,3 +239,77 @@ TEST(PlayniteAutosync_Reconcile, AutoRemoveUninstalledHonorsFlag) {
   ASSERT_EQ(root["apps"].size(), 1u);
   EXPECT_EQ(root["apps"][0]["playnite-id"], "A");
 }
+
+namespace {
+  Game platform_game(std::string id, std::vector<PlatformRef> platforms, bool emulated, std::vector<std::string> emulator_platforms = {}) {
+    Game g = G(std::move(id), "2025-01-01T00:00:00Z", true);
+    g.name = "Example Game " + g.id;
+    g.has_platform_info = true;
+    g.platforms = std::move(platforms);
+    g.emulated = emulated;
+    g.emulator_platforms = std::move(emulator_platforms);
+    return g;
+  }
+
+  void reconcile(nlohmann::json &root, const std::vector<Game> &all, int recent_count = 0) {
+    bool changed = false;
+    std::size_t matched = 0;
+    autosync_reconcile(root, all, recent_count, 0, 0, false, false, {}, {}, {}, {}, {}, false, changed, matched);
+  }
+}  // namespace
+
+TEST(PlayniteAutosync_Platform, BackfillsExistingLinkedAppsAndKeepsManualPlatform) {
+  nlohmann::json root;
+  root["apps"] = nlohmann::json::array();
+  root["apps"].push_back({{"name", "Example Game A"}, {"playnite-id", "A"}, {"platform", "My Group"}, {"platform-id", "my_group"}});
+  root["apps"].push_back({{"name", "Example Game B"}, {"playnite-id", "B"}});
+  std::vector<Game> all {
+    platform_game("A", {{"PC (Windows)", "pc_windows"}, {"Nintendo Switch", "nintendo_switch"}}, true, {"nintendo_switch"}),
+    platform_game("B", {{"PC (Windows)", "pc_windows"}}, false),
+  };
+  reconcile(root, all);
+  ASSERT_EQ(root["apps"].size(), 2u);
+  const auto &a = root["apps"][0];
+  EXPECT_EQ(a.value("playnite-platform", ""), "Nintendo Switch");
+  EXPECT_EQ(a.value("playnite-platform-id", ""), "nintendo_switch");
+  EXPECT_EQ(a.value("platform", ""), "My Group");
+  EXPECT_EQ(a.value("platform-id", ""), "my_group");
+  const auto &b = root["apps"][1];
+  EXPECT_EQ(b.value("playnite-platform", ""), "PC (Windows)");
+  EXPECT_EQ(b.value("playnite-platform-id", ""), "pc_windows");
+  EXPECT_FALSE(b.contains("platform"));
+}
+
+TEST(PlayniteAutosync_Platform, NewAutoEntriesCarryPlatform) {
+  nlohmann::json root;
+  root["apps"] = nlohmann::json::array();
+  reconcile(root, {platform_game("A", {{"Nintendo 3DS", "nintendo_3ds"}}, true, {"nintendo_3ds"})}, 1);
+  ASSERT_EQ(root["apps"].size(), 1u);
+  EXPECT_EQ(root["apps"][0].value("playnite-platform", ""), "Nintendo 3DS");
+  EXPECT_EQ(root["apps"][0].value("playnite-platform-id", ""), "nintendo_3ds");
+  EXPECT_FALSE(root["apps"][0].contains("platform"));
+}
+
+TEST(PlayniteAutosync_Platform, OldConnectorWritesNothingAndKeepsEarlierValues) {
+  nlohmann::json root;
+  root["apps"] = nlohmann::json::array();
+  root["apps"].push_back({{"name", "Example Game A"}, {"playnite-id", "A"}, {"playnite-platform", "Nintendo GameCube"}, {"playnite-platform-id", "nintendo_gamecube"}});
+  root["apps"].push_back({{"name", "Example Game B"}, {"playnite-id", "B"}});
+  std::vector<Game> all {G("A", "2025-01-01T00:00:00Z", true), G("B", "2025-01-01T00:00:00Z", true)};
+  reconcile(root, all);
+  ASSERT_EQ(root["apps"].size(), 2u);
+  EXPECT_EQ(root["apps"][0].value("playnite-platform", ""), "Nintendo GameCube");
+  EXPECT_EQ(root["apps"][0].value("playnite-platform-id", ""), "nintendo_gamecube");
+  EXPECT_FALSE(root["apps"][1].contains("playnite-platform"));
+  EXPECT_FALSE(root["apps"][1].contains("playnite-platform-id"));
+}
+
+TEST(PlayniteAutosync_Platform, CustomPlatformWithoutSpecIdClearsStaleId) {
+  nlohmann::json root;
+  root["apps"] = nlohmann::json::array();
+  root["apps"].push_back({{"name", "Example Game A"}, {"playnite-id", "A"}, {"playnite-platform", "Nintendo Switch"}, {"playnite-platform-id", "nintendo_switch"}});
+  reconcile(root, {platform_game("A", {{"Example Console", ""}}, true)});
+  ASSERT_EQ(root["apps"].size(), 1u);
+  EXPECT_EQ(root["apps"][0].value("playnite-platform", ""), "Example Console");
+  EXPECT_FALSE(root["apps"][0].contains("playnite-platform-id"));
+}

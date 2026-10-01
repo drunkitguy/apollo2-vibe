@@ -29,6 +29,137 @@ namespace platf::playnite {
     return out;
   }
 
+  // The helpers below read the platform fields added in connector 0.5.0. They
+  // never throw: a malformed value only loses that value, never the game.
+  static std::string lenient_string(const json &obj, const char *key) {
+    try {
+      if (!obj.is_object()) {
+        return {};
+      }
+      const auto it = obj.find(key);
+      if (it != obj.end() && it->is_string()) {
+        return it->get<std::string>();
+      }
+    } catch (...) {}
+    return {};
+  }
+
+  static bool lenient_bool(const json &obj, const char *key) {
+    try {
+      if (!obj.is_object()) {
+        return false;
+      }
+      const auto it = obj.find(key);
+      if (it == obj.end()) {
+        return false;
+      }
+      if (it->is_boolean()) {
+        return it->get<bool>();
+      }
+      if (it->is_number_integer()) {
+        return it->get<long long>() != 0;
+      }
+      if (it->is_string()) {
+        const auto text = it->get<std::string>();
+        return text == "true" || text == "True" || text == "TRUE" || text == "1";
+      }
+    } catch (...) {}
+    return false;
+  }
+
+  // PowerShell serializes a one-element array as the element itself, so a
+  // single string is accepted as a list of one.
+  static std::vector<std::string> lenient_string_list(const json &obj, const char *key) {
+    std::vector<std::string> out;
+    try {
+      if (!obj.is_object()) {
+        return out;
+      }
+      const auto it = obj.find(key);
+      if (it == obj.end()) {
+        return out;
+      }
+      if (it->is_string()) {
+        if (!it->get_ref<const std::string &>().empty()) {
+          out.emplace_back(it->get<std::string>());
+        }
+        return out;
+      }
+      if (!it->is_array()) {
+        return out;
+      }
+      for (const auto &v : *it) {
+        if (v.is_string() && !v.get_ref<const std::string &>().empty()) {
+          out.emplace_back(v.get<std::string>());
+        }
+      }
+    } catch (...) {}
+    return out;
+  }
+
+  static bool parse_platform_ref(const json &v, PlatformRef &out) {
+    try {
+      if (v.is_string()) {
+        out.name = v.get<std::string>();
+      } else if (v.is_object()) {
+        out.name = lenient_string(v, "name");
+        out.spec_id = lenient_string(v, "specId");
+      }
+    } catch (...) {}
+    return !out.name.empty() || !out.spec_id.empty();
+  }
+
+  // Accepts an array of {name, specId} objects or plain strings, a single
+  // object, or a single string.
+  static std::vector<PlatformRef> lenient_platform_list(const json &obj, const char *key) {
+    std::vector<PlatformRef> out;
+    try {
+      const auto it = obj.find(key);
+      if (it == obj.end()) {
+        return out;
+      }
+      if (it->is_array()) {
+        for (const auto &v : *it) {
+          PlatformRef ref;
+          if (parse_platform_ref(v, ref)) {
+            out.emplace_back(std::move(ref));
+          }
+        }
+      } else {
+        PlatformRef ref;
+        if (parse_platform_ref(*it, ref)) {
+          out.emplace_back(std::move(ref));
+        }
+      }
+    } catch (...) {}
+    return out;
+  }
+
+  static void parse_platform_fields(const json &g, Game &game) {
+    try {
+      if (!g.is_object()) {
+        return;
+      }
+      // Older connectors never send the key; its presence (even as null or an
+      // empty array) is what marks the game as carrying platform data.
+      game.has_platform_info = g.contains("platforms");
+      game.platforms = lenient_platform_list(g, "platforms");
+      game.source_name = lenient_string(g, "source");
+      game.emulated = lenient_bool(g, "emulated");
+      game.emulator_name = lenient_string(g, "emulatorName");
+      game.emulator_builtin_id = lenient_string(g, "emulatorBuiltInId");
+      game.emulator_platforms = lenient_string_list(g, "emulatorPlatforms");
+    } catch (...) {
+      game.has_platform_info = false;
+      game.platforms.clear();
+      game.source_name.clear();
+      game.emulated = false;
+      game.emulator_name.clear();
+      game.emulator_builtin_id.clear();
+      game.emulator_platforms.clear();
+    }
+  }
+
   Message parse(std::span<const uint8_t> bytes) {
     Message m;
     if (bytes.empty()) {
@@ -124,6 +255,7 @@ namespace platf::playnite {
             inst = true;
           }
           game.installed = inst;
+          parse_platform_fields(g, game);
           if (!game.id.empty()) {
             m.games.emplace_back(std::move(game));
           }

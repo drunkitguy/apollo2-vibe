@@ -42,6 +42,14 @@ namespace platf::playnite {
   };
 
   /**
+   * @brief One Playnite platform attached to a game.
+   */
+  struct PlatformRef {
+    std::string name;  ///< Display name (e.g. "Nintendo Switch").
+    std::string spec_id;  ///< Playnite specification id (e.g. "nintendo_switch"); empty for custom platforms.
+  };
+
+  /**
    * @brief Playnite game description parsed from IPC JSON.
    *
    * Field names intentionally use snake_case for internal consistency. They are
@@ -64,6 +72,13 @@ namespace platf::playnite {
     std::string description;  ///< Optional description / notes.
     std::vector<std::string> tags;  ///< Tag list.
     bool installed = false;  ///< Installation state (installed / isInstalled).
+    std::vector<PlatformRef> platforms;  ///< Playnite platforms of the game (platforms).
+    bool has_platform_info = false;  ///< True when the connector sent a platforms key (connector 0.5.0 or newer).
+    std::string source_name;  ///< Playnite "Source" name (source).
+    bool emulated = false;  ///< Play action runs through a Playnite emulator (emulated).
+    std::string emulator_name;  ///< Emulator display name (emulatorName).
+    std::string emulator_builtin_id;  ///< Playnite built-in emulator id such as "ryujinx" (emulatorBuiltInId).
+    std::vector<std::string> emulator_platforms;  ///< Platform spec ids the emulator profile supports (emulatorPlatforms).
   };
 
   /**
