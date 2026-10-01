@@ -1570,8 +1570,14 @@ function Get-PlayActionEmulator {
     $actions = $null
     try { $actions = $Game.GameActions } catch {}
     if ($actions -and $actions.Count -gt 0) {
-      $play = $actions | Where-Object { $_.IsPlayAction } | Select-Object -First 1
-      if (-not $play) { $play = $actions[0] }
+      # Plain loop instead of a pipeline: this runs once per game per snapshot.
+      $play = $null
+      foreach ($action in $actions) {
+        $isPlay = $false
+        try { $isPlay = [bool]$action.IsPlayAction } catch {}
+        if ($isPlay) { $play = $action; break }
+      }
+      if (-not $play) { try { $play = $actions[0] } catch {} }
       if ($play) {
         $isEmu = $false
         try {
@@ -1779,7 +1785,8 @@ function Get-PlayniteGames {
   try { $emulatorMap = Get-EmulatorInfoMap } catch { $emulatorMap = @{} }
   $platformCount = 0
   $emulatedCount = 0
-  $games = @()
+  # A list instead of "$games +=", which copies the whole array for every game.
+  $games = New-Object System.Collections.Generic.List[object]
   foreach ($g in $PlayniteApi.Database.Games) {
     $act = Get-GameActionInfo -Game $g
     $catNames = @()
@@ -1829,7 +1836,7 @@ function Get-PlayniteGames {
         if ($platformFields.emulated) { $emulatedCount++ }
       } catch {}
     }
-    $games += $entry
+    $games.Add($entry)
   }
   Write-Log "Collected $($games.Count) games"
   try { Write-Log ("Platform data: games={0} emulated={1} emulators={2}" -f $platformCount, $emulatedCount, $emulatorMap.Count) } catch {}
