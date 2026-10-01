@@ -172,7 +172,7 @@ jobs:
 
             The app list now tells the client which system each app belongs to, such as PC, Nintendo Switch or Apps, so Vibe Window 1.1.0 and later can group the library by system. Older clients ignore this and behave as before.
 
-            Playnite games need the updated Playnite connector (0.5.0) before they get a system:
+            Playnite games need the updated Playnite connector (0.5.0 or newer; this build ships 0.5.1) before they get a system:
 
             1. Open the host web UI, go to the Integrations page and update the Playnite plugin.
             2. Restart Playnite.
