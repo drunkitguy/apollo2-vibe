@@ -567,8 +567,9 @@ jobs:
             done
           }
 
-          # classify NAME: prints running, crash, started (exited cleanly after main logged
-          # its version banner) or early-exit, from the gdb exit code and output.
+          # classify NAME: prints running, crash, started (exited without crashing after main
+          # logged its version banner) or early-exit, from the gdb exit code and output.
+          # Only running passes for sunshine.exe; the result names the failure.
           classify() {
             local log="${smoke_root}/$1-gdb.log"
             if [[ "${smoke_rc}" -eq 124 ]]; then
@@ -655,9 +656,8 @@ jobs:
               echo "Smoke test: sunshine.exe stayed up for ${smoke_seconds} s."
               ;;
             started)
-              # The runner has no GPU or real display, so sunshine.exe may stop on its own
-              # after startup. What this check guards against is a crash, above all before main().
-              echo "::warning::sunshine.exe started (logged its version banner) and then exited cleanly within ${smoke_seconds} s (gdb exit ${smoke_rc}); see its log above."
+              echo "::error::sunshine.exe started (logged its version banner) but exited within ${smoke_seconds} s (gdb exit ${smoke_rc}); see its log above." >&2
+              exit 1
               ;;
             crash)
               echo "::error::sunshine.exe crashed within ${smoke_seconds} s of starting (gdb exit ${smoke_rc}); see the backtrace above." >&2
