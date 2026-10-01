@@ -681,6 +681,28 @@ jobs:
           fi
           "${test_exe}"
 
+      # Platform grouping in /applist: Playnite connector payload parsing,
+      # platform derivation during sync, and apps.json platform resolution.
+      - name: Test library platform policy
+        if: inputs.run_window_only_tests && inputs.build_tests
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          for test_name in \
+            test_component_playnite_protocol \
+            test_component_test_playnite_sync \
+            test_component_test_playnite_autosync_reconcile \
+            test_component_test_playnite_sync_autosync \
+            test_component_process_policy; do
+            test_exe="$(find build -type f -name "${test_name}.exe" -print -quit)"
+            if [[ -z "${test_exe}" ]]; then
+              echo "::error::${test_name}.exe was not built" >&2
+              exit 1
+            fi
+            echo "== ${test_name}"
+            "${test_exe}"
+          done
+
       - name: Install cv2pdb
         if: startsWith(github.ref, 'refs/tags/') || inputs.publish_symbols || inputs.upload_symbols_artifact
         shell: pwsh
