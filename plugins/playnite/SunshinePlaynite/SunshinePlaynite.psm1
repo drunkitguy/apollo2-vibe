@@ -1558,10 +1558,227 @@ function Get-IconPath {
   return ''
 }
 
+# Platform data (connector 0.5.0). Every helper below is best effort: a failure
+# only drops the platform fields of a game, never the game itself.
+
+function Get-PlayActionEmulator {
+  param([object]$Game)
+  # Returns whether the primary play action runs through a Playnite emulator,
+  # plus the emulator id and profile id when it does.
+  $result = @{ emulated = $false; emulatorId = ''; profileId = '' }
+  try {
+    $actions = $null
+    try { $actions = $Game.GameActions } catch {}
+    if ($actions -and $actions.Count -gt 0) {
+      $play = $actions | Where-Object { $_.IsPlayAction } | Select-Object -First 1
+      if (-not $play) { $play = $actions[0] }
+      if ($play) {
+        $isEmu = $false
+        try {
+          $t = $play.Type
+          if ($t) {
+            $tStr = try { $t.ToString() } catch { [string]$t }
+            if ($tStr -and ($tStr -match 'Emulator')) { $isEmu = $true }
+          }
+        } catch {}
+        $emuIdStr = ''
+        try { $emuIdStr = [string]$play.EmulatorId } catch {}
+        if ($emuIdStr -match '(?i)^0{8}-0{4}-0{4}-0{4}-0{12}$') { $emuIdStr = '' }
+        if (-not $isEmu -and $emuIdStr) { $isEmu = $true }
+        $profileIdStr = ''
+        try { $profileIdStr = [string]$play.EmulatorProfileId } catch {}
+        $result.emulated = $isEmu
+        $result.emulatorId = $emuIdStr
+        $result.profileId = $profileIdStr
+      }
+    }
+  } catch {}
+  return $result
+}
+
+function Get-EmulatorInfoMap {
+  # Built once per snapshot: emulator id (lower case) ->
+  # @{ name; builtInId; platforms = <spec ids of all profiles>; profiles = @{ profileId = <spec ids> } }
+  # Custom profiles list platform Guids; those are mapped to the platform's
+  # specification id, or to its name when the platform has none.
+  $map = @{}
+  try {
+    if (-not $PlayniteApi) { return $map }
+    $db = $null
+    try { $db = $PlayniteApi.Database } catch {}
+    if (-not $db) { return $map }
+    $platformKeys = @{}
+    try {
+      $dbPlatforms = $null
+      try { $dbPlatforms = $db.Platforms } catch {}
+      if ($dbPlatforms) {
+        foreach ($p in $dbPlatforms) {
+          try {
+            $platKey = ([string]$p.Id).ToLowerInvariant()
+            $platValue = ''
+            try { $platValue = [string]$p.SpecificationId } catch {}
+            if (-not $platValue) { try { $platValue = [string]$p.Name } catch {} }
+            if ($platKey -and $platValue) { $platformKeys[$platKey] = $platValue }
+          } catch {}
+        }
+      }
+    } catch {}
+    $emulators = $null
+    try { $emulators = $db.Emulators } catch {}
+    if (-not $emulators) { return $map }
+    $emulation = $null
+    try { $emulation = $PlayniteApi.Emulation } catch {}
+    foreach ($emu in $emulators) {
+      try {
+        $emuKey = ''
+        try { $emuKey = ([string]$emu.Id).ToLowerInvariant() } catch {}
+        if (-not $emuKey) { continue }
+        $emuName = ''
+        try { $emuName = [string]$emu.Name } catch {}
+        $builtInId = ''
+        try { $builtInId = [string]$emu.BuiltInConfigId } catch {}
+        $allSpecs = New-Object System.Collections.Generic.List[string]
+        $profileSpecs = @{}
+        if ($builtInId -and $emulation) {
+          $definition = $null
+          try { $definition = $emulation.GetEmulator($builtInId) } catch {}
+          $definitionProfiles = @{}
+          if ($definition) {
+            $defProfiles = $null
+            try { $defProfiles = $definition.Profiles } catch {}
+            if ($defProfiles) {
+              foreach ($defProfile in $defProfiles) {
+                try {
+                  $specs = New-Object System.Collections.Generic.List[string]
+                  $defPlatforms = $null
+                  try { $defPlatforms = $defProfile.Platforms } catch {}
+                  if ($defPlatforms) {
+                    foreach ($spec in $defPlatforms) {
+                      $specStr = [string]$spec
+                      if ($specStr -and -not $specs.Contains($specStr)) { $specs.Add($specStr) }
+                      if ($specStr -and -not $allSpecs.Contains($specStr)) { $allSpecs.Add($specStr) }
+                    }
+                  }
+                  $defName = ''
+                  try { $defName = [string]$defProfile.Name } catch {}
+                  if ($defName) { $definitionProfiles[$defName] = $specs.ToArray() }
+                } catch {}
+              }
+            }
+          }
+          $builtinProfiles = $null
+          try { $builtinProfiles = $emu.BuiltinProfiles } catch {}
+          if ($builtinProfiles) {
+            foreach ($bp in $builtinProfiles) {
+              try {
+                $bpId = [string]$bp.Id
+                $bpName = [string]$bp.BuiltInProfileName
+                if ($bpId -and $bpName -and $definitionProfiles.ContainsKey($bpName)) {
+                  $profileSpecs[$bpId] = $definitionProfiles[$bpName]
+                }
+              } catch {}
+            }
+          }
+        }
+        $customProfiles = $null
+        try { $customProfiles = $emu.CustomProfiles } catch {}
+        if ($customProfiles) {
+          foreach ($cp in $customProfiles) {
+            try {
+              $specs = New-Object System.Collections.Generic.List[string]
+              $cpPlatforms = $null
+              try { $cpPlatforms = $cp.Platforms } catch {}
+              if ($cpPlatforms) {
+                foreach ($platGuid in $cpPlatforms) {
+                  $guidKey = ([string]$platGuid).ToLowerInvariant()
+                  if ($guidKey -and $platformKeys.ContainsKey($guidKey)) {
+                    $specStr = $platformKeys[$guidKey]
+                    if (-not $specs.Contains($specStr)) { $specs.Add($specStr) }
+                    if (-not $allSpecs.Contains($specStr)) { $allSpecs.Add($specStr) }
+                  }
+                }
+              }
+              $cpId = [string]$cp.Id
+              if ($cpId) { $profileSpecs[$cpId] = $specs.ToArray() }
+            } catch {}
+          }
+        }
+        $map[$emuKey] = @{ name = $emuName; builtInId = $builtInId; platforms = $allSpecs.ToArray(); profiles = $profileSpecs }
+      } catch {}
+    }
+  } catch {}
+  return $map
+}
+
+function Get-PlatformList {
+  param([object]$Game)
+  # Platforms attached to the game as @{ name; specId } entries (possibly none).
+  $list = @()
+  try {
+    $platforms = $null
+    try { $platforms = $Game.Platforms } catch {}
+    if ($platforms) {
+      foreach ($p in $platforms) {
+        try {
+          if ($null -eq $p) { continue }
+          $platName = ''
+          try { $platName = [string]$p.Name } catch {}
+          $specId = ''
+          try { $specId = [string]$p.SpecificationId } catch {}
+          if ($platName -or $specId) { $list += @{ name = $platName; specId = $specId } }
+        } catch {}
+      }
+    }
+  } catch {}
+  return $list
+}
+
+function Get-GamePlatformFields {
+  param([object]$Game, [hashtable]$EmulatorMap)
+  # The platforms key is always present for a 0.5.0 connector; the host uses
+  # its presence to tell new connectors from old ones.
+  $platforms = @(Get-PlatformList -Game $Game)
+  $sourceName = ''
+  try {
+    $src = $null
+    try { $src = $Game.Source } catch {}
+    if ($src) { $sourceName = [string]$src.Name }
+  } catch {}
+  $fields = @{ platforms = $platforms; source = $sourceName; emulated = $false }
+  $emu = Get-PlayActionEmulator -Game $Game
+  if ($emu.emulated) {
+    $fields.emulated = $true
+    $emuName = ''
+    $builtInId = ''
+    $emuPlatforms = @()
+    try {
+      $emuKey = ([string]$emu.emulatorId).ToLowerInvariant()
+      if ($emuKey -and $EmulatorMap -and $EmulatorMap.ContainsKey($emuKey)) {
+        $info = $EmulatorMap[$emuKey]
+        $emuName = [string]$info.name
+        $builtInId = [string]$info.builtInId
+        $profileKey = [string]$emu.profileId
+        if ($profileKey -and $info.profiles -and $info.profiles.ContainsKey($profileKey)) {
+          $emuPlatforms = @($info.profiles[$profileKey])
+        }
+        if ($emuPlatforms.Count -eq 0) { $emuPlatforms = @($info.platforms) }
+      }
+    } catch {}
+    $fields.emulatorName = $emuName
+    $fields.emulatorBuiltInId = $builtInId
+    $fields.emulatorPlatforms = $emuPlatforms
+  }
+  return $fields
+}
+
 function Get-PlayniteGames {
   if (-not $PlayniteApi) { return @() }
   $catMap = Get-CategoryNamesMap
   $pluginMap = Get-LibraryPluginMap
+  $emulatorMap = @{}
+  try { $emulatorMap = Get-EmulatorInfoMap } catch { $emulatorMap = @{} }
+  $platformCount = 0
+  $emulatedCount = 0
   $games = @()
   foreach ($g in $PlayniteApi.Database.Games) {
     $act = Get-GameActionInfo -Game $g
@@ -1585,7 +1802,9 @@ function Get-PlayniteGames {
     if ($pluginId -and $pluginMap.ContainsKey($pluginId)) { $pluginName = $pluginMap[$pluginId] }
     $instDir = ''
     try { if ($g.InstallDirectory) { $instDir = $g.InstallDirectory } } catch {}
-    $games += @{
+    $platformFields = $null
+    try { $platformFields = Get-GamePlatformFields -Game $g -EmulatorMap $emulatorMap } catch { $platformFields = $null }
+    $entry = @{
       id              = $g.Id.ToString()
       name            = $g.Name
       exe             = $act.exe
@@ -1602,8 +1821,18 @@ function Get-PlayniteGames {
       installed       = $installed
       tags            = @() # TODO: fill from $g.TagIds if needed
     }
+    # Without platform fields the host keeps what an earlier snapshot stored.
+    if ($platformFields) {
+      try {
+        foreach ($key in @($platformFields.Keys)) { $entry[$key] = $platformFields[$key] }
+        $platformCount++
+        if ($platformFields.emulated) { $emulatedCount++ }
+      } catch {}
+    }
+    $games += $entry
   }
   Write-Log "Collected $($games.Count) games"
+  try { Write-Log ("Platform data: games={0} emulated={1} emulators={2}" -f $platformCount, $emulatedCount, $emulatorMap.Count) } catch {}
   try {
     $s = ($games | Select-Object -First 3)
     $names = ($s | ForEach-Object { $_.name }) -join ', '
@@ -1893,23 +2122,11 @@ function Build-StatusPayload {
   $instDir = ''
   try { if ($Game.InstallDirectory) { $instDir = $Game.InstallDirectory } } catch {}
   try {
-    $actions = $null
-    try { $actions = $Game.GameActions } catch {}
-    if ($actions -and $actions.Count -gt 0) {
-      $play = $actions | Where-Object { $_.IsPlayAction } | Select-Object -First 1
-      if (-not $play) { $play = $actions[0] }
-      if ($play) {
-        $isEmu = $false
-        try {
-          $t = $play.Type
-          if ($t) {
-            $tStr = try { $t.ToString() } catch { [string]$t }
-            if ($tStr -and ($tStr -match 'Emulator')) { $isEmu = $true }
-          }
-        } catch {}
-        $emuIdStr = ''
-        try { $emuIdStr = [string]$play.EmulatorId } catch {}
-        if (-not $isEmu -and $emuIdStr -and ($emuIdStr -notmatch '(?i)^0{8}-0{4}-0{4}-0{4}-0{12}$')) { $isEmu = $true }
+    $emuAction = Get-PlayActionEmulator -Game $Game
+    if ($emuAction) {
+      if ($emuAction.emulated) {
+        $isEmu = $true
+        $emuIdStr = [string]$emuAction.emulatorId
         if ($isEmu -and $PlayniteApi) {
           try {
             $db = $null
