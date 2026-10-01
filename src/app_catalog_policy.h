@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <set>
 #include <span>
@@ -88,6 +89,7 @@ namespace proc::catalog {
     std::string playnite_id;  ///< "playnite-platform-id": written by the Playnite sync.
     bool playnite_fullscreen = false;  ///< The app launches Playnite itself.
     bool has_cmd = false;  ///< The app has a non-empty "cmd".
+    bool has_detached = false;  ///< The app has at least one non-empty "detached" command.
     bool has_playnite_game = false;  ///< The app has a non-empty "playnite-id".
   };
 
@@ -101,8 +103,19 @@ namespace proc::catalog {
   /**
    * Resolves an app's platform: the manual "platform" / "platform-id" keys,
    * else the Playnite sync values, else "Apps" for the Playnite launcher and
-   * for apps that run no command and are not Playnite games (Desktop style
-   * entries), else nothing.
+   * for apps that run neither a command nor a detached command and are not
+   * Playnite games (Desktop style entries), else nothing.
    */
   platform_t resolve_platform(const platform_source_t &source);
+
+  /// apps.json keys that hold an app's platform group.
+  inline constexpr const char *kPlatformKeys[] = {"platform", "platform-id", "playnite-platform", "playnite-platform-id"};
+
+  /**
+   * Keeps the platform keys of an app that is being replaced by an edited copy.
+   *
+   * Editors that only send the fields they know would otherwise drop them. A
+   * key present in the edited copy wins; an explicit null removes it.
+   */
+  void carry_over_platform_keys(const nlohmann::json &existing, nlohmann::json &edited) noexcept;
 }  // namespace proc::catalog

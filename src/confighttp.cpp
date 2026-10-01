@@ -46,6 +46,7 @@
 #endif
 
 // local includes
+#include "app_catalog_policy.h"
 #include "config.h"
 #include "confighttp.h"
 #include "crypto.h"
@@ -1991,6 +1992,9 @@ namespace confighttp {
                 input_tree["uuid"] = apps_node[i]["uuid"].get<std::string>();
               }
             } catch (...) {}
+            // Editors that send only the fields they know must not drop the
+            // library platform group stored with the app.
+            proc::catalog::carry_over_platform_keys(apps_node[i], input_tree);
             newApps.push_back(input_tree);
           } else {
             newApps.push_back(apps_node[i]);

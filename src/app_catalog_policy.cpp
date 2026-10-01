@@ -269,9 +269,28 @@ namespace proc::catalog {
     if (!playnite.name.empty() || !playnite.id.empty()) {
       return playnite;
     }
-    if (source.playnite_fullscreen || (!source.has_cmd && !source.has_playnite_game)) {
+    if (source.playnite_fullscreen || (!source.has_cmd && !source.has_detached && !source.has_playnite_game)) {
       return apps_platform();
     }
     return {};
+  }
+
+  void carry_over_platform_keys(const nlohmann::json &existing, nlohmann::json &edited) noexcept {
+    try {
+      if (!existing.is_object() || !edited.is_object()) {
+        return;
+      }
+      for (const auto *key : kPlatformKeys) {
+        if (const auto it = edited.find(key); it != edited.end()) {
+          if (it->is_null()) {
+            edited.erase(it);
+          }
+          continue;
+        }
+        if (const auto it = existing.find(key); it != existing.end() && it->is_string()) {
+          edited[key] = *it;
+        }
+      }
+    } catch (...) {}
   }
 }  // namespace proc::catalog

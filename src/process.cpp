@@ -3704,6 +3704,9 @@ namespace proc {
           platform_source.playnite_id = string_value("playnite-platform-id");
           platform_source.playnite_fullscreen = ctx.playnite_fullscreen;
           platform_source.has_cmd = !boost::algorithm::trim_copy(ctx.cmd).empty();
+          platform_source.has_detached = std::any_of(detached.begin(), detached.end(), [](const std::string &command) {
+            return !boost::algorithm::trim_copy(command).empty();
+          });
           platform_source.has_playnite_game = !ctx.playnite_id.empty();
           auto platform = proc::catalog::resolve_platform(platform_source);
           ctx.platform = std::move(platform.name);

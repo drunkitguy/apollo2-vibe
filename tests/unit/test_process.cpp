@@ -189,6 +189,16 @@ namespace {
     EXPECT_EQ(platform.id, "apps");
   }
 
+  TEST(ProcessPlatform, DetachedOnlyLauncherEntryIsNotApps) {
+    // A hand-added game started through a detached URL (no cmd, no Playnite
+    // id) is a game, not a utility.
+    proc::catalog::platform_source_t source;
+    source.has_detached = true;
+    const auto platform = proc::catalog::resolve_platform(source);
+    EXPECT_TRUE(platform.name.empty());
+    EXPECT_TRUE(platform.id.empty());
+  }
+
   TEST(ProcessPlatform, PlayniteLauncherIsApps) {
     auto source = game_with_command();
     source.playnite_fullscreen = true;
@@ -221,5 +231,42 @@ namespace {
     EXPECT_EQ(capped, std::string(63, 'a'));
     const std::string exact = std::string(62, 'a') + "\xC3\xA9";
     EXPECT_EQ(proc::catalog::sanitize_platform_value(exact), exact);
+  }
+
+  TEST(ProcessPlatform, EditedAppKeepsPlatformKeysItDidNotSend) {
+    const nlohmann::json existing = {
+      {"name", "Example Game"},
+      {"platform", "My Group"},
+      {"platform-id", "my_group"},
+      {"playnite-platform", "Nintendo Switch"},
+      {"playnite-platform-id", "nintendo_switch"},
+    };
+    nlohmann::json edited = {{"name", "Example Game (renamed)"}};
+    proc::catalog::carry_over_platform_keys(existing, edited);
+    EXPECT_EQ(edited.value("name", ""), "Example Game (renamed)");
+    EXPECT_EQ(edited.value("platform", ""), "My Group");
+    EXPECT_EQ(edited.value("platform-id", ""), "my_group");
+    EXPECT_EQ(edited.value("playnite-platform", ""), "Nintendo Switch");
+    EXPECT_EQ(edited.value("playnite-platform-id", ""), "nintendo_switch");
+  }
+
+  TEST(ProcessPlatform, EditedPlatformKeysWinAndNullRemoves) {
+    const nlohmann::json existing = {{"platform", "My Group"}, {"platform-id", "my_group"}, {"playnite-platform", "Nintendo 3DS"}};
+    nlohmann::json edited = {{"platform", "Other Group"}, {"platform-id", nullptr}};
+    proc::catalog::carry_over_platform_keys(existing, edited);
+    EXPECT_EQ(edited.value("platform", ""), "Other Group");
+    EXPECT_FALSE(edited.contains("platform-id"));
+    EXPECT_EQ(edited.value("playnite-platform", ""), "Nintendo 3DS");
+    EXPECT_FALSE(edited.contains("playnite-platform-id"));
+  }
+
+  TEST(ProcessPlatform, CarryOverIgnoresMalformedInput) {
+    nlohmann::json edited = {{"name", "Example Game"}};
+    proc::catalog::carry_over_platform_keys(nlohmann::json::array(), edited);
+    proc::catalog::carry_over_platform_keys(nlohmann::json {{"platform", 42}}, edited);
+    EXPECT_EQ(edited, (nlohmann::json {{"name", "Example Game"}}));
+    nlohmann::json not_object = "text";
+    proc::catalog::carry_over_platform_keys(nlohmann::json {{"platform", "My Group"}}, not_object);
+    EXPECT_EQ(not_object, "text");
   }
 }  // namespace
