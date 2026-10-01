@@ -221,4 +221,57 @@ namespace proc::catalog {
     }
     return alias_match;
   }
+
+  platform_t apps_platform() {
+    return {"Apps", "apps"};
+  }
+
+  std::string sanitize_platform_value(std::string_view value) {
+    std::string cleaned;
+    cleaned.reserve(value.size());
+    for (const auto character : value) {
+      const auto byte = static_cast<unsigned char>(character);
+      if (byte < 0x20 || byte == 0x7f) {
+        // Control characters would make the /applist XML invalid; treat tabs
+        // and line breaks as spaces so trimming still applies.
+        if (character == '\t' || character == '\r' || character == '\n') {
+          cleaned.push_back(' ');
+        }
+        continue;
+      }
+      cleaned.push_back(character);
+    }
+    const auto first = cleaned.find_first_not_of(' ');
+    if (first == std::string::npos) {
+      return {};
+    }
+    const auto last = cleaned.find_last_not_of(' ');
+    cleaned = cleaned.substr(first, last - first + 1);
+    if (cleaned.size() > kMaxPlatformLength) {
+      auto cut = kMaxPlatformLength;
+      // Step back over UTF-8 continuation bytes so no sequence is split.
+      while (cut > 0 && (static_cast<unsigned char>(cleaned[cut]) & 0xC0) == 0x80) {
+        --cut;
+      }
+      cleaned.resize(cut);
+      const auto end = cleaned.find_last_not_of(' ');
+      cleaned.resize(end == std::string::npos ? 0 : end + 1);
+    }
+    return cleaned;
+  }
+
+  platform_t resolve_platform(const platform_source_t &source) {
+    platform_t manual {sanitize_platform_value(source.manual_name), sanitize_platform_value(source.manual_id)};
+    if (!manual.name.empty() || !manual.id.empty()) {
+      return manual;
+    }
+    platform_t playnite {sanitize_platform_value(source.playnite_name), sanitize_platform_value(source.playnite_id)};
+    if (!playnite.name.empty() || !playnite.id.empty()) {
+      return playnite;
+    }
+    if (source.playnite_fullscreen || (!source.has_cmd && !source.has_playnite_game)) {
+      return apps_platform();
+    }
+    return {};
+  }
 }  // namespace proc::catalog

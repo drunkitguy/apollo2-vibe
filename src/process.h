@@ -137,6 +137,10 @@ namespace proc {
     std::string playnite_id;
     // When true, launch Playnite in fullscreen mode via the helper.
     bool playnite_fullscreen;
+    // Platform group reported in /applist (e.g. "Nintendo Switch" / "nintendo_switch",
+    // or "Apps" / "apps"); empty when unknown. Display metadata only.
+    std::string platform;
+    std::string platform_id;
     bool frame_gen_limiter_fix;
     bool elevated;
     bool virtual_screen {false};

@@ -133,4 +133,93 @@ namespace {
     EXPECT_NE(std::get<0>(first), std::get<0>(second));
     EXPECT_NE(std::get<1>(first), std::get<1>(indexed));
   }
+
+  proc::catalog::platform_source_t game_with_command() {
+    proc::catalog::platform_source_t source;
+    source.has_cmd = true;
+    return source;
+  }
+
+  TEST(ProcessPlatform, ManualPlatformWinsOverPlayniteData) {
+    auto source = game_with_command();
+    source.manual_name = "My Group";
+    source.manual_id = "my_group";
+    source.playnite_name = "Nintendo Switch";
+    source.playnite_id = "nintendo_switch";
+    const auto platform = proc::catalog::resolve_platform(source);
+    EXPECT_EQ(platform.name, "My Group");
+    EXPECT_EQ(platform.id, "my_group");
+  }
+
+  TEST(ProcessPlatform, ManualPlatformWithoutIdDoesNotBorrowPlayniteId) {
+    proc::catalog::platform_source_t source;
+    source.has_playnite_game = true;
+    source.manual_name = "  Handhelds  ";
+    source.playnite_name = "Nintendo 3DS";
+    source.playnite_id = "nintendo_3ds";
+    const auto platform = proc::catalog::resolve_platform(source);
+    EXPECT_EQ(platform.name, "Handhelds");
+    EXPECT_TRUE(platform.id.empty());
+  }
+
+  TEST(ProcessPlatform, BlankManualPlatformFallsThroughToPlaynite) {
+    proc::catalog::platform_source_t source;
+    source.has_playnite_game = true;
+    source.manual_name = "   ";
+    source.playnite_name = "Nintendo GameCube";
+    source.playnite_id = "nintendo_gamecube";
+    const auto platform = proc::catalog::resolve_platform(source);
+    EXPECT_EQ(platform.name, "Nintendo GameCube");
+    EXPECT_EQ(platform.id, "nintendo_gamecube");
+  }
+
+  TEST(ProcessPlatform, PlayniteGameWithoutPlatformDataIsUnknown) {
+    // An outdated Playnite connector stores no platform; the app must not be
+    // mislabeled as a utility just because synced games carry no cmd.
+    proc::catalog::platform_source_t source;
+    source.has_playnite_game = true;
+    const auto platform = proc::catalog::resolve_platform(source);
+    EXPECT_TRUE(platform.name.empty());
+    EXPECT_TRUE(platform.id.empty());
+  }
+
+  TEST(ProcessPlatform, AppsWithoutCommandAreApps) {
+    const auto platform = proc::catalog::resolve_platform({});
+    EXPECT_EQ(platform.name, "Apps");
+    EXPECT_EQ(platform.id, "apps");
+  }
+
+  TEST(ProcessPlatform, PlayniteLauncherIsApps) {
+    auto source = game_with_command();
+    source.playnite_fullscreen = true;
+    const auto platform = proc::catalog::resolve_platform(source);
+    EXPECT_EQ(platform.name, "Apps");
+    EXPECT_EQ(platform.id, "apps");
+  }
+
+  TEST(ProcessPlatform, CommandWithoutPlatformDataIsUnknown) {
+    const auto platform = proc::catalog::resolve_platform(game_with_command());
+    EXPECT_TRUE(platform.name.empty());
+    EXPECT_TRUE(platform.id.empty());
+  }
+
+  TEST(ProcessPlatform, BuiltInEntriesReportApps) {
+    const auto platform = proc::catalog::apps_platform();
+    EXPECT_EQ(platform.name, "Apps");
+    EXPECT_EQ(platform.id, "apps");
+  }
+
+  TEST(ProcessPlatform, ValuesAreTrimmedCleanedAndCapped) {
+    EXPECT_EQ(proc::catalog::sanitize_platform_value("\t Example\nSystem \r\n"), "Example System");
+    EXPECT_EQ(proc::catalog::sanitize_platform_value(std::string {'A', '\x01', 'B'}), "AB");
+    EXPECT_EQ(proc::catalog::sanitize_platform_value(""), "");
+    const std::string long_value(100, 'x');
+    EXPECT_EQ(proc::catalog::sanitize_platform_value(long_value).size(), proc::catalog::kMaxPlatformLength);
+    // 63 ASCII bytes followed by a two byte UTF-8 sequence: the cut must not split it.
+    const std::string utf8 = std::string(63, 'a') + "\xC3\xA9" + "tail";
+    const auto capped = proc::catalog::sanitize_platform_value(utf8);
+    EXPECT_EQ(capped, std::string(63, 'a'));
+    const std::string exact = std::string(62, 'a') + "\xC3\xA9";
+    EXPECT_EQ(proc::catalog::sanitize_platform_value(exact), exact);
+  }
 }  // namespace

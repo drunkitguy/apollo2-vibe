@@ -3685,6 +3685,34 @@ namespace proc {
           }
         }
 
+        // Platform group for the client library. Display metadata only; a bad
+        // value must never fail the apps.json parse.
+        ctx.platform.clear();
+        ctx.platform_id.clear();
+        try {
+          const auto string_value = [&app_node](const char *key) -> std::string {
+            const auto it = app_node.find(key);
+            if (it != app_node.end() && it->is_string()) {
+              return it->get<std::string>();
+            }
+            return {};
+          };
+          proc::catalog::platform_source_t platform_source;
+          platform_source.manual_name = string_value("platform");
+          platform_source.manual_id = string_value("platform-id");
+          platform_source.playnite_name = string_value("playnite-platform");
+          platform_source.playnite_id = string_value("playnite-platform-id");
+          platform_source.playnite_fullscreen = ctx.playnite_fullscreen;
+          platform_source.has_cmd = !boost::algorithm::trim_copy(ctx.cmd).empty();
+          platform_source.has_playnite_game = !ctx.playnite_id.empty();
+          auto platform = proc::catalog::resolve_platform(platform_source);
+          ctx.platform = std::move(platform.name);
+          ctx.platform_id = std::move(platform.id);
+        } catch (...) {
+          ctx.platform.clear();
+          ctx.platform_id.clear();
+        }
+
         const bool has_lossless_scaling_enabled = app_node.contains("lossless-scaling-enabled");
         ctx.lossless_scaling_enabled =
           util::get_non_string_json_value<bool>(app_node, "lossless-scaling-enabled", false);
@@ -3797,6 +3825,8 @@ namespace proc {
       ctx.idx = std::to_string(i);
       ctx.uuid = FALLBACK_DESKTOP_UUID;  // Placeholder UUID
       ctx.name = "Desktop (fallback)";
+      ctx.platform = proc::catalog::apps_platform().name;
+      ctx.platform_id = proc::catalog::apps_platform().id;
       ctx.image_path = parse_env_val(this_env, "desktop-alt.png");
       ctx.virtual_display = false;
       ctx.scale_factor = 100;
@@ -3831,6 +3861,8 @@ namespace proc {
       ctx.idx = std::to_string(i);
       ctx.uuid = VIRTUAL_DISPLAY_UUID;
       ctx.name = "Virtual Display";
+      ctx.platform = proc::catalog::apps_platform().name;
+      ctx.platform_id = proc::catalog::apps_platform().id;
       ctx.image_path = parse_env_val(this_env, "virtual_desktop.png");
       ctx.virtual_display = true;
       ctx.scale_factor = 100;
@@ -3865,6 +3897,8 @@ namespace proc {
         ctx.idx = std::to_string(i);
         ctx.uuid = REMOTE_INPUT_UUID;
         ctx.name = "Remote Input";
+        ctx.platform = proc::catalog::apps_platform().name;
+        ctx.platform_id = proc::catalog::apps_platform().id;
         ctx.image_path = parse_env_val(this_env, "input_only.png");
         ctx.virtual_display = false;
         ctx.scale_factor = 100;
@@ -3901,6 +3935,8 @@ namespace proc {
       ctx.idx = std::to_string(i);
       ctx.uuid = TERMINATE_APP_UUID;
       ctx.name = "Terminate";
+      ctx.platform = proc::catalog::apps_platform().name;
+      ctx.platform_id = proc::catalog::apps_platform().id;
       ctx.image_path = parse_env_val(this_env, "terminate.png");
       ctx.virtual_display = false;
       ctx.scale_factor = 100;

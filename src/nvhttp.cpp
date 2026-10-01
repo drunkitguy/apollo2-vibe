@@ -3125,6 +3125,13 @@ namespace nvhttp {
           app_node.put("IDX", app.idx);
           app_node.put("ID", app.id);
           app_node.put("ArtVersion", app.art_version);
+          // Library grouping hints; omitted when unknown so the list is unchanged for those apps.
+          if (!app.platform.empty()) {
+            app_node.put("Platform", app.platform);
+          }
+          if (!app.platform_id.empty()) {
+            app_node.put("PlatformId", app.platform_id);
+          }
 
           apps.push_back(std::make_pair("App", std::move(app_node)));
         }

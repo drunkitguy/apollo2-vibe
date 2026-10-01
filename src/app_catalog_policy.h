@@ -12,6 +12,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <vector>
 
@@ -68,4 +69,40 @@ namespace proc::catalog {
     const std::vector<app_identity_t> &apps,
     std::string app_id,
     const std::string &app_uuid = {});
+
+  /// Longest platform name or id reported to clients, in bytes.
+  inline constexpr std::size_t kMaxPlatformLength = 64;
+
+  /// Platform group of an app as reported in /applist; both empty when unknown.
+  struct platform_t {
+    std::string name;
+    std::string id;
+  };
+
+  /// Raw apps.json values that decide an app's platform. Strings are empty when
+  /// the key is missing or not a string.
+  struct platform_source_t {
+    std::string manual_name;  ///< "platform": set by hand, always wins.
+    std::string manual_id;  ///< "platform-id": optional companion of "platform".
+    std::string playnite_name;  ///< "playnite-platform": written by the Playnite sync.
+    std::string playnite_id;  ///< "playnite-platform-id": written by the Playnite sync.
+    bool playnite_fullscreen = false;  ///< The app launches Playnite itself.
+    bool has_cmd = false;  ///< The app has a non-empty "cmd".
+    bool has_playnite_game = false;  ///< The app has a non-empty "playnite-id".
+  };
+
+  /// The group built-in entries (Desktop, Virtual Display, Remote Input, Terminate) report.
+  platform_t apps_platform();
+
+  /// Trims whitespace, drops control characters and caps the value at
+  /// kMaxPlatformLength bytes without splitting a UTF-8 sequence.
+  std::string sanitize_platform_value(std::string_view value);
+
+  /**
+   * Resolves an app's platform: the manual "platform" / "platform-id" keys,
+   * else the Playnite sync values, else "Apps" for the Playnite launcher and
+   * for apps that run no command and are not Playnite games (Desktop style
+   * entries), else nothing.
+   */
+  platform_t resolve_platform(const platform_source_t &source);
 }  // namespace proc::catalog
