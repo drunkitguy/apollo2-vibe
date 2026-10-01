@@ -168,6 +168,18 @@ jobs:
 
             Clients that do not send the window-only flag stream the whole display exactly as before.
 
+            ## Library systems
+
+            The app list now tells the client which system each app belongs to, such as PC, Nintendo Switch or Apps, so Vibe Window 1.1.0 and later can group the library by system. Older clients ignore this and behave as before.
+
+            Playnite games need the updated Playnite connector (0.5.0) before they get a system:
+
+            1. Open the host web UI, go to the Integrations page and update the Playnite plugin.
+            2. Restart Playnite.
+            3. Wait for one library snapshot. Playnite sends it shortly after it starts, and the host then fills in the system of every synced game.
+
+            Until then, Playnite games have no system and the client lists them under PC. Desktop, the Playnite launcher and other entries without a command are listed under Apps. To put an app in a group by hand, add a `"platform"` value to it in apps.json; it takes priority over Playnite data, and the Playnite sync never changes it.
+
             ## Known limitations
 
             - Only the app's main window is shown. Menus, dropdowns and other popup windows of the app are not visible.
