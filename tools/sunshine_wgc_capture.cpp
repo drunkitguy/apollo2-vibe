@@ -1339,6 +1339,7 @@ private:
   std::atomic<bool> _recomposite_pending {false};  ///< A layer changed without a new target frame.
   std::atomic<bool> _last_frame_had_layers {false};  ///< The latest queued frame drew secondary layers.
   std::atomic<int> _layer_callbacks {0};  ///< Layer FrameArrived handlers in flight.
+  std::atomic<uint64_t> _target_recomposite_requests {0};  ///< Recomposites requested from target frames (logged at debug).
   // Recomposites run on their own thread, so neither the main thread nor a FrameArrived
   // handler ever waits for the context lock behind the shared keyed mutex for them.
   std::mutex _recomposite_mutex;
@@ -1775,10 +1776,12 @@ private:
    */
   void collect_drawable_layers(collect_buffers_t &buffers) {
     buffers.draws.clear();
-    if (!_layer_mode || !_layers_published.load(std::memory_order_acquire)) {
+    if (!_layer_mode) {
       return;
     }
 
+    // Refreshed even when nothing is published, so the buffers always name the publication
+    // they reflect and an unchanged empty publication never looks like a layer change.
     if (buffers.layers_generation != _layers_generation.load(std::memory_order_acquire)) {
       std::lock_guard lock(_layers_mutex);
       buffers.layers.assign(_published_layers.begin(), _published_layers.end());
@@ -1879,7 +1882,15 @@ private:
       }
       frame = nullptr;
 
-      if (_target_collect.layers_generation != _layers_generation.load(std::memory_order_acquire)) {
+      // Only a real publication change counts. With no layer published and none in the
+      // latest frame there is nothing a recomposite could change, so the worker is not woken.
+      if (_target_collect.layers_generation != _layers_generation.load(std::memory_order_acquire) &&
+          (_layers_published.load(std::memory_order_acquire) || _last_frame_had_layers.load(std::memory_order_acquire))) {
+        const auto requests = _target_recomposite_requests.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (requests <= 5 || requests % 120 == 0) {
+          BOOST_LOG(debug) << "Secondary layers changed while a target frame was composited; recompositing"
+                           << " (count=" << requests << ")";
+        }
         request_recomposite();
       }
       if (copied) {
@@ -3187,7 +3198,10 @@ public:
     if (_reuse_deadline_qpc != 0) {
       next = std::min(next, _reuse_deadline_qpc);
     }
-    const auto wait_ms = std::clamp<int64_t>((next - qpc_now()) * 1000 / qpc_frequency(), 0, 16);
+    // Rounded up, so the loop never spins with a 0 ms wait before a deadline.
+    const auto delta = next - qpc_now();
+    const auto frequency = qpc_frequency();
+    const auto wait_ms = delta <= 0 ? int64_t {0} : std::min<int64_t>((delta * 1000 + frequency - 1) / frequency, 16);
     return static_cast<DWORD>(wait_ms);
   }
 
