@@ -547,6 +547,7 @@ namespace platf::dxgi {
     std::chrono::steady_clock::time_point _last_secure_desktop_probe {};  ///< Last secure-desktop probe performed during a stall.
     std::unique_ptr<window_target::tracker_t> _window_tracker;  ///< Target window tracker in window-only sessions.
     std::chrono::steady_clock::time_point _last_window_reinit {};  ///< Start of the current window-only capture.
+    std::uint64_t _last_window_set_generation = 0;  ///< App window set last sent to the helper.
   };
 
   class display_wgc_ipc_ram_t: public display_ram_t {
@@ -659,6 +660,11 @@ namespace platf::dxgi {
      * @brief Start of the current window-only capture.
      */
     std::chrono::steady_clock::time_point _last_window_reinit {};
+
+    /**
+     * @brief App window set last sent to the helper.
+     */
+    std::uint64_t _last_window_set_generation = 0;
   };
 
   /**

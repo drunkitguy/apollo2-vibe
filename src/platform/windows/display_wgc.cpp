@@ -211,9 +211,13 @@ namespace platf::dxgi {
       }
 
       // Moving and focusing the target can block on its process, so the tracker thread does it.
-      auto tracker = std::make_unique<window_target::tracker_t>(output);
+      const bool secondary_windows = false;
+      auto tracker = std::make_unique<window_target::tracker_t>(output, secondary_windows);
       const auto hwnd = tracker->select_now();
       ipc_session.set_window_target(hwnd);
+      if (tracker->secondary_windows()) {
+        ipc_session.enable_window_set();
+      }
       capture_start = std::chrono::steady_clock::now();
       return tracker;
     }
@@ -234,6 +238,26 @@ namespace platf::dxgi {
 
       BOOST_LOG(info) << "Window-only target changed; restarting capture";
       return true;
+    }
+
+    // Send the app window set to the helper when it changed. The generation is an atomic
+    // read, so this costs nothing per frame while the set is unchanged.
+    void sync_window_set(
+      const std::unique_ptr<window_target::tracker_t> &tracker,
+      ipc_session_t &ipc_session,
+      std::uint64_t &last_sent_generation
+    ) {
+      if (!tracker || !tracker->secondary_windows()) {
+        return;
+      }
+      const auto generation = tracker->window_set_generation();
+      if (generation == last_sent_generation) {
+        return;
+      }
+
+      const auto window_set = tracker->window_set();
+      ipc_session.set_window_set(window_set.target, window_set.pids);
+      last_sent_generation = window_set.generation;
     }
 
     capture_e forward_cached_wgc_frame(std::shared_ptr<platf::img_t> cached_frame, std::shared_ptr<platf::img_t> &img_out) {
@@ -285,6 +309,7 @@ namespace platf::dxgi {
     if (_ipc_session->init(config, display_name, device.get(), advanced_color_capture)) {
       return -1;
     }
+    _last_window_set_generation = 0;
     _window_tracker = init_window_target(config, captured_output_desc.DesktopCoordinates, *_ipc_session, _last_window_reinit);
     game_refresh_target = make_wgc_activity_admission_target(
       *_ipc_session,
@@ -314,6 +339,7 @@ namespace platf::dxgi {
     if (window_target_needs_reinit(_window_tracker, *_ipc_session, _last_window_reinit)) {
       return capture_e::reinit;
     }
+    sync_window_set(_window_tracker, *_ipc_session, _last_window_set_generation);
 
     _ipc_session->initialize_if_needed();
     if (!_ipc_session->is_initialized()) {
@@ -554,6 +580,7 @@ namespace platf::dxgi {
     if (_ipc_session->init(config, display_name, device.get(), advanced_color_capture)) {
       return -1;
     }
+    _last_window_set_generation = 0;
     _window_tracker = init_window_target(config, captured_output_desc.DesktopCoordinates, *_ipc_session, _last_window_reinit);
     game_refresh_target = make_wgc_activity_admission_target(
       *_ipc_session,
@@ -582,6 +609,7 @@ namespace platf::dxgi {
     if (window_target_needs_reinit(_window_tracker, *_ipc_session, _last_window_reinit)) {
       return capture_e::reinit;
     }
+    sync_window_set(_window_tracker, *_ipc_session, _last_window_set_generation);
 
     _ipc_session->initialize_if_needed();
     if (!_ipc_session->is_initialized()) {

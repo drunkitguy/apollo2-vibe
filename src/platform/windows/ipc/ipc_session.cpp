@@ -346,6 +346,9 @@ namespace platf::dxgi {
     if (_config.window_only) {
       config_data.flags |= WGC_IPC_FLAG_WINDOW_CAPTURE;
       config_data.target_hwnd = static_cast<uint64_t>(_window_target.load(std::memory_order_relaxed));
+      if (_window_set_enabled.load(std::memory_order_relaxed)) {
+        config_data.flags |= WGC_IPC_FLAG_WINDOW_SET;
+      }
     }
 
     // Convert display_name (std::string) to wchar_t[32]
@@ -484,6 +487,37 @@ namespace platf::dxgi {
     if (_activity_admission_fps.load(std::memory_order_relaxed) != config_data.activity_admission_fps) {
       (void) set_activity_admission_fps(_activity_admission_fps.load(std::memory_order_relaxed));
     }
+    if ((config_data.flags & WGC_IPC_FLAG_WINDOW_SET) != 0) {
+      std::lock_guard lock(_window_set_mutex);
+      (void) send_window_set_locked();
+    }
+  }
+
+  bool ipc_session_t::set_window_set(const std::uintptr_t target, const std::span<const std::uint32_t> pids) {
+    if (!_config.window_only || !_window_set_enabled.load(std::memory_order_relaxed)) {
+      return false;
+    }
+
+    std::lock_guard lock(_window_set_mutex);
+    _window_set = window_set_data_t {};
+    _window_set.magic = WGC_WINDOW_SET_MESSAGE_MAGIC;
+    _window_set.target_hwnd = static_cast<uint64_t>(target);
+    const auto count = std::min<std::size_t>(pids.size(), WGC_WINDOW_SET_MAX_PIDS);
+    std::copy_n(pids.begin(), count, std::begin(_window_set.pids));
+    _window_set.pid_count = static_cast<uint32_t>(count);
+    _window_set_valid = true;
+    return send_window_set_locked();
+  }
+
+  bool ipc_session_t::send_window_set_locked() {
+    if (!_window_set_valid || !_pipe || !_initialized) {
+      return false;
+    }
+    if (!_pipe->is_connected()) {
+      return false;
+    }
+    _pipe->send(std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&_window_set), sizeof(_window_set)));
+    return true;
   }
 
   bool ipc_session_t::set_activity_admission_fps(const int fps) {

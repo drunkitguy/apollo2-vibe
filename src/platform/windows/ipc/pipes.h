@@ -69,6 +69,7 @@ namespace platf::dxgi {
     WGC_IPC_FLAG_ALLOW_BUFFER_DECREASE = 1u << 1,
     WGC_IPC_FLAG_FORCE_SDR_CAPTURE_FORMAT = 1u << 2,
     WGC_IPC_FLAG_WINDOW_CAPTURE = 1u << 3,
+    WGC_IPC_FLAG_WINDOW_SET = 1u << 4,  ///< The main process sends app window sets; composite the app's secondary windows.
   };
 
   /**
@@ -123,6 +124,28 @@ namespace platf::dxgi {
     uint32_t magic;
     int32_t admission_fps;
   };
+
+  constexpr uint32_t WGC_WINDOW_SET_MESSAGE_MAGIC = 0x57475753;  // "WGWS"
+  constexpr uint32_t WGC_WINDOW_SET_MAX_PIDS = 62;
+
+  /**
+   * @brief Runtime update with the processes whose windows a window-only stream may show.
+   * Sent only when WGC_IPC_FLAG_WINDOW_SET is set. The helper composites visible top-level
+   * windows of these processes over the target and never draws any other window.
+   */
+  struct window_set_data_t {
+    uint32_t magic;
+    uint32_t pid_count;
+    uint64_t target_hwnd;  ///< Target this set belongs to; the helper ignores a set for another target
+    uint32_t pids[WGC_WINDOW_SET_MAX_PIDS];  ///< Sorted ascending
+  };
+
+  // Messages from the main process are told apart by size in the helper.
+  static_assert(sizeof(window_set_data_t) == 264, "window_set_data_t layout changed");
+  static_assert(offsetof(window_set_data_t, target_hwnd) == 8);
+  static_assert(offsetof(window_set_data_t, pids) == 16);
+  static_assert(sizeof(window_set_data_t) != sizeof(config_data_t));
+  static_assert(sizeof(window_set_data_t) != sizeof(activity_admission_data_t));
 
   /**
    * @brief Result codes for pipe operations.

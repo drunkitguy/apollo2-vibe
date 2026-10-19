@@ -12,6 +12,7 @@
 #include <winsock2.h>
 #include <d3d11.h>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -160,6 +161,24 @@ namespace platf::dxgi {
     }
 
     /**
+     * @brief Let the helper composite the app's secondary windows in a window-only session.
+     * Sets WGC_IPC_FLAG_WINDOW_SET the next time the helper starts. Off by default.
+     */
+    void enable_window_set() {
+      _window_set_enabled.store(true, std::memory_order_relaxed);
+    }
+
+    /**
+     * @brief Send the processes whose windows the stream may show, for the given target.
+     * The latest set is kept and sent again whenever the helper (re)connects.
+     * Does nothing unless enable_window_set() was called.
+     * @param target Window the set belongs to.
+     * @param pids Sorted process ids; at most WGC_WINDOW_SET_MAX_PIDS are sent.
+     * @return `false` when the pipe is down; the set is still sent on the next connect.
+     */
+    bool set_window_set(std::uintptr_t target, std::span<const std::uint32_t> pids);
+
+    /**
      * @brief Read the static descriptor of the shared texture without acquiring the keyed mutex.
      * The shared texture is created once at session setup and its descriptor never changes for
      * the lifetime of the session, so it is safe to read at any time.
@@ -200,6 +219,11 @@ namespace platf::dxgi {
      */
     void stop_helper_process();
 
+    /**
+     * @brief Send the stored window set to the helper. Call with `_window_set_mutex` held.
+     */
+    bool send_window_set_locked();
+
     // --- members ---
     std::unique_ptr<ProcessHandler> _process_helper;  ///< Helper process owner.
     std::unique_ptr<AsyncNamedPipe> _pipe;  ///< Async control/message pipe.
@@ -225,6 +249,10 @@ namespace platf::dxgi {
     bool _advanced_color_capture = false;  ///< True when target display is already Advanced Color/HDR.
     std::atomic<int> _activity_admission_fps {0};  ///< Latest desired helper admission rate, retained across helper restarts.
     std::atomic<std::uintptr_t> _window_target {0};  ///< Window captured in a window-only session.
+    std::atomic<bool> _window_set_enabled {false};  ///< The helper composites the app's secondary windows.
+    std::mutex _window_set_mutex;  ///< Guards the two members below.
+    window_set_data_t _window_set {};  ///< Latest window set, retained across helper restarts.
+    bool _window_set_valid = false;  ///< `_window_set` holds a set to send.
     std::chrono::steady_clock::time_point _last_helper_stop {};  ///< Last time we tore down the helper.
   };
 
