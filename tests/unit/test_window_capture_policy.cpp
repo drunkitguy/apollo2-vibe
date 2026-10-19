@@ -1,4 +1,5 @@
 #include "../tests_common.h"
+#include "src/platform/windows/wgc_capture_policy.h"
 #include "src/platform/windows/window_capture_policy.h"
 
 #include <array>
@@ -895,4 +896,21 @@ TEST(WindowCapturePolicy, FocusGoesToAnEnabledTargetWithoutADialog) {
   EXPECT_EQ(plan_focus({.target = 1, .target_enabled = true, .foreground_root = 7, .last_active_popup = 1}), 1u);
   EXPECT_EQ(plan_focus({.target = 1, .target_enabled = true, .foreground_root = 7}), 1u);
   EXPECT_EQ(plan_focus({.target = 1, .target_enabled = false, .foreground_root = 7}), 0u);
+}
+
+TEST(WgcHelperInitPolicy, GpuPriorityAndDpiAwarenessAreBestEffort) {
+  using platf::dxgi::wgc_policy::helper_init_step_e;
+  using platf::dxgi::wgc_policy::helper_init_step_required;
+  // A normal user token may lack the privilege for REALTIME GPU scheduling; the helper
+  // must still start.
+  EXPECT_FALSE(helper_init_step_required(helper_init_step_e::gpu_scheduling_priority));
+  EXPECT_FALSE(helper_init_step_required(helper_init_step_e::dpi_awareness));
+}
+
+TEST(WgcHelperInitPolicy, ThreadPriorityMmcssAndWinrtStayRequired) {
+  using platf::dxgi::wgc_policy::helper_init_step_e;
+  using platf::dxgi::wgc_policy::helper_init_step_required;
+  EXPECT_TRUE(helper_init_step_required(helper_init_step_e::thread_priority));
+  EXPECT_TRUE(helper_init_step_required(helper_init_step_e::mmcss_characteristics));
+  EXPECT_TRUE(helper_init_step_required(helper_init_step_e::winrt_apartment));
 }

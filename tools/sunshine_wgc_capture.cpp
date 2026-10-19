@@ -374,10 +374,48 @@ public:
   }
 
   /**
+   * @brief Enables SeIncreaseBasePriorityPrivilege on the process token when the token holds it.
+   *
+   * A token can hold the privilege in the disabled state. Enabling it lets the REALTIME
+   * GPU scheduling class succeed. Failure is expected for normal user tokens and only logged.
+   *
+   * @return true if the privilege is enabled, false otherwise.
+   */
+  static bool enable_increase_base_priority_privilege() {
+    winrt::handle token;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, token.put())) {
+      BOOST_LOG(debug) << "OpenProcessToken failed while enabling SeIncreaseBasePriorityPrivilege: " << GetLastError();
+      return false;
+    }
+
+    LUID luid {};
+    if (!LookupPrivilegeValueW(nullptr, L"SeIncreaseBasePriorityPrivilege", &luid)) {
+      BOOST_LOG(debug) << "LookupPrivilegeValueW failed for SeIncreaseBasePriorityPrivilege: " << GetLastError();
+      return false;
+    }
+
+    TOKEN_PRIVILEGES privileges {};
+    privileges.PrivilegeCount = 1;
+    privileges.Privileges[0].Luid = luid;
+    privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    if (!AdjustTokenPrivileges(token.get(), FALSE, &privileges, sizeof(privileges), nullptr, nullptr)) {
+      BOOST_LOG(debug) << "AdjustTokenPrivileges failed for SeIncreaseBasePriorityPrivilege: " << GetLastError();
+      return false;
+    }
+    // AdjustTokenPrivileges succeeds without enabling anything when the token lacks the privilege.
+    if (GetLastError() == ERROR_NOT_ALL_ASSIGNED) {
+      BOOST_LOG(debug) << "The process token does not hold SeIncreaseBasePriorityPrivilege";
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * @brief Sets GPU scheduling priority for optimal capture performance under high GPU load.
    *
-   * Configures the process GPU scheduling priority to REALTIME. This is critical for maintaining
-   * capture performance when the GPU is under heavy load from games or other applications.
+   * Tries the REALTIME class first, after enabling SeIncreaseBasePriorityPrivilege when the
+   * token holds it, then falls back to HIGH. This step is best effort: the helper keeps
+   * running at the default GPU priority when both classes are refused.
    *
    * @return true if GPU priority was successfully set, false otherwise.
    */
@@ -394,18 +432,27 @@ public:
       return false;
     }
 
-    auto priority = static_cast<LONG>(D3DKMT_SchedulingPriorityClass::REALTIME);
+    const bool privilege_enabled = enable_increase_base_priority_privilege();
 
-    HRESULT hr = d3dkmt_set_process_priority(GetCurrentProcess(), priority);
-    if (FAILED(hr)) {
-      BOOST_LOG(warning) << "Failed to set GPU scheduling priority to REALTIME: " << hr
-                         << " (may require administrator privileges for optimal performance)";
-      return false;
+    HRESULT hr = d3dkmt_set_process_priority(GetCurrentProcess(), static_cast<LONG>(D3DKMT_SchedulingPriorityClass::REALTIME));
+    if (SUCCEEDED(hr)) {
+      BOOST_LOG(info) << "GPU scheduling priority set to REALTIME for optimal capture performance";
+      _gpu_priority_set = true;
+      return true;
     }
+    BOOST_LOG(warning) << "Failed to set GPU scheduling priority to REALTIME: " << hr
+                       << (privilege_enabled ? "" : " (SeIncreaseBasePriorityPrivilege is not available to this process)")
+                       << "; trying HIGH";
 
-    BOOST_LOG(info) << "GPU scheduling priority set to REALTIME for optimal capture performance";
-    _gpu_priority_set = true;
-    return true;
+    hr = d3dkmt_set_process_priority(GetCurrentProcess(), static_cast<LONG>(D3DKMT_SchedulingPriorityClass::HIGH));
+    if (SUCCEEDED(hr)) {
+      BOOST_LOG(info) << "GPU scheduling priority set to HIGH";
+      _gpu_priority_set = true;
+      return true;
+    }
+    BOOST_LOG(warning) << "Failed to set GPU scheduling priority to HIGH: " << hr
+                       << "; capture continues at the default GPU priority";
+    return false;
   }
 
   /**
@@ -431,16 +478,24 @@ public:
    * - MMCSS characteristics setup
    * - WinRT apartment initialization
    *
-   * DPI awareness is best-effort because Windows may have already selected it for the process.
+   * Which steps are required is decided by
+   * platf::dxgi::wgc_policy::helper_init_step_required(). DPI awareness and the GPU
+   * scheduling priority are best effort.
    * @return true if all required initialization steps succeeded, false if any required step failed.
    */
   bool initialize_all() {
+    using platf::dxgi::wgc_policy::helper_init_step_e;
     bool success = true;
-    initialize_dpi_awareness();
-    success &= initialize_thread_priority();
-    success &= initialize_gpu_scheduling_priority();
-    success &= initialize_mmcss_characteristics();
-    success &= initialize_winrt_apartment();
+    const auto record = [&success](const helper_init_step_e step, const bool step_succeeded) {
+      if (!step_succeeded && platf::dxgi::wgc_policy::helper_init_step_required(step)) {
+        success = false;
+      }
+    };
+    record(helper_init_step_e::dpi_awareness, initialize_dpi_awareness());
+    record(helper_init_step_e::thread_priority, initialize_thread_priority());
+    record(helper_init_step_e::gpu_scheduling_priority, initialize_gpu_scheduling_priority());
+    record(helper_init_step_e::mmcss_characteristics, initialize_mmcss_characteristics());
+    record(helper_init_step_e::winrt_apartment, initialize_winrt_apartment());
     return success;
   }
 
