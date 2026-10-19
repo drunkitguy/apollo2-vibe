@@ -548,6 +548,7 @@ namespace platf::dxgi {
     std::unique_ptr<window_target::tracker_t> _window_tracker;  ///< Target window tracker in window-only sessions.
     std::chrono::steady_clock::time_point _last_window_reinit {};  ///< Start of the current window-only capture.
     std::uint64_t _last_window_set_generation = 0;  ///< App window set last sent to the helper.
+    std::unique_ptr<struct wgc_copy_timers_t> _copy_timers;  ///< Debug-level timers of the shared texture hand-off.
   };
 
   class display_wgc_ipc_ram_t: public display_ram_t {

@@ -276,6 +276,18 @@ namespace platf::dxgi {
     }
   }  // namespace
 
+  /**
+   * @brief Debug-level min/max/avg timers of the shared texture hand-off from the capture helper.
+   *
+   * They measure how long the WGC copy path waits for the helper's keyed mutex and how long
+   * the copy into the encoder image takes to submit. Used by the capture thread only; they
+   * collect nothing unless the log level is debug or lower.
+   */
+  struct wgc_copy_timers_t {
+    logging::min_max_avg_periodic_logger<double> shared_mutex_wait {debug, "WGC host: shared texture keyed mutex wait", "ms"};
+    logging::min_max_avg_periodic_logger<double> copy_to_encoder {debug, "WGC host: copy to encoder image", "ms"};
+  };
+
   display_wgc_ipc_vram_t::display_wgc_ipc_vram_t() = default;
 
   display_wgc_ipc_vram_t::~display_wgc_ipc_vram_t() {
@@ -311,6 +323,7 @@ namespace platf::dxgi {
     if (_ipc_session->init(config, display_name, device.get(), advanced_color_capture)) {
       return -1;
     }
+    _copy_timers = std::make_unique<wgc_copy_timers_t>();
     _last_window_set_generation = 0;
     _window_tracker = init_window_target(config, captured_output_desc.DesktopCoordinates, *_ipc_session, _last_window_reinit);
     game_refresh_target = make_wgc_activity_admission_target(
@@ -434,7 +447,9 @@ namespace platf::dxgi {
     texture2d_t src;
     uint64_t frame_qpc = 0;
     winrt::com_ptr<ID3D11Texture2D> gpu_tex;
+    const auto shared_mutex_wait_start = std::chrono::steady_clock::now();
     capture_status = _ipc_session->lock_frame(gpu_tex, frame_qpc);
+    const auto shared_mutex_wait = std::chrono::steady_clock::now() - shared_mutex_wait_start;
     if (capture_status != capture_e::ok) {
       return capture_status;
     }
@@ -460,6 +475,10 @@ namespace platf::dxgi {
     const auto copy_count = g_wgc_snapshot_copies.fetch_add(1, std::memory_order_relaxed) + 1;
     const auto capture_mutex_wait_ms = std::chrono::duration<double, std::milli>(capture_mutex_wait).count();
     const auto copy_submit_ms = std::chrono::duration<double, std::milli>(copy_submit).count();
+    if (_copy_timers) {
+      _copy_timers->shared_mutex_wait.collect_and_log(std::chrono::duration<double, std::milli>(shared_mutex_wait).count());
+      _copy_timers->copy_to_encoder.collect_and_log(copy_submit_ms);
+    }
     const bool slow_lock = capture_mutex_wait_ms > 1.0;
     const bool slow_copy = copy_submit_ms > 1.0;
     if (slow_lock) {

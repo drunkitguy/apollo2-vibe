@@ -19,6 +19,7 @@
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
+#include <format>
 #include <functional>
 #include <list>
 #include <memory>
@@ -38,6 +39,7 @@
 #include "src/platform/windows/ipc/pipes.h"
 #include "src/platform/windows/wgc_capture_policy.h"
 #include "src/platform/windows/window_capture_policy.h"
+#include "src/stat_trackers.h"
 #include "src/utility.h"  // For RAII utilities
 
 // platform includes
@@ -145,6 +147,37 @@ static std::mutex g_config_mutex;
 static std::condition_variable g_config_cv;
 static std::atomic<int32_t> g_activity_admission_fps {120};
 static std::atomic<uint32_t> g_activity_admission_generation {0};
+
+/**
+ * @brief Debug-level min/max/avg timer for the capture helper.
+ *
+ * logging::min_max_avg_periodic_logger reads config::sunshine, which the helper does not
+ * link, so the helper keeps its own. Create it after the config from the main process
+ * arrived: it collects nothing unless that config asks for debug logging. Not thread-safe;
+ * callers serialize collect().
+ */
+class helper_debug_timer_t {
+public:
+  explicit helper_debug_timer_t(const char *name):
+      _name(name),
+      _enabled(g_config.log_level <= 1) {  // 1 is the debug severity (see src/logging.cpp)
+  }
+
+  void collect(const std::chrono::steady_clock::duration elapsed) {
+    if (!_enabled) {
+      return;
+    }
+    const double elapsed_ms = std::chrono::duration<double, std::milli>(elapsed).count();
+    _tracker.collect_and_callback_on_interval(elapsed_ms, [this](const double min_ms, const double max_ms, const double avg_ms) {
+      BOOST_LOG(debug) << _name << " (min/max/avg): " << std::format("{:.2f}ms/{:.2f}ms/{:.2f}ms", min_ms, max_ms, avg_ms);
+    }, std::chrono::seconds(20));
+  }
+
+private:
+  const char *_name;
+  bool _enabled;
+  stat_trackers::min_max_avg_tracker<double> _tracker;
+};
 
 /**
  * @brief Latest app window set from the main process (WGC_IPC_FLAG_WINDOW_SET sessions only).
@@ -1371,6 +1404,10 @@ private:
   std::optional<delivery_frame_t> _pending_delivery_frame;
   bool _delivery_stop = false;
   std::mutex _d3d_context_mutex;
+  // Debug-level timers of the copy path; collected only with _d3d_context_mutex held.
+  helper_debug_timer_t _keyed_mutex_wait_timer {"WGC helper: shared texture keyed mutex wait"};
+  helper_debug_timer_t _publish_copy_timer {"WGC helper: copy and publish to shared texture"};
+  helper_debug_timer_t _scratch_copy_timer {"WGC helper: copy or composite into scratch texture"};
   std::array<scratch_texture_t, 3> _scratch_textures;
   std::atomic<uint64_t> _delivery_backpressure_waits {0};
   std::atomic<uint64_t> _delivery_replaced_frames {0};
@@ -1927,6 +1964,7 @@ private:
       std::lock_guard context_lock(_d3d_context_mutex);
       auto &scratch = _scratch_textures[scratch_index];
       bool copied = false;
+      const auto scratch_copy_start = std::chrono::steady_clock::now();
       if (!layers.empty() && composite_target_with_layers(scratch, frame_tex, window_blit, layers)) {
         copied = true;
       } else {
@@ -1935,6 +1973,7 @@ private:
           note_target_only_frame(scratch_index, window_blit);
         }
       }
+      _scratch_copy_timer.collect(std::chrono::steady_clock::now() - scratch_copy_start);
       frame = nullptr;
 
       // Only a real publication change counts. With no layer published and none in the
@@ -2646,11 +2685,13 @@ private:
     bool copied = true;
     {
       std::lock_guard context_lock(_d3d_context_mutex);
+      const auto scratch_copy_start = std::chrono::steady_clock::now();
       if (_window_mode) {
         copied = composite_window_frame(_scratch_textures[*scratch_index], frame_tex, window_blit);
       } else {
         _deps->d3d_context->CopyResource(_scratch_textures[*scratch_index].texture.get(), frame_tex.get());
       }
+      _scratch_copy_timer.collect(std::chrono::steady_clock::now() - scratch_copy_start);
     }
 
     // From here on the delivery thread owns only the helper scratch texture, not
@@ -2789,6 +2830,8 @@ private:
       return;
     }
     const auto shared_mutex_hold = std::chrono::steady_clock::now() - shared_mutex_hold_start;
+    _keyed_mutex_wait_timer.collect(mutex_wait);
+    _publish_copy_timer.collect(shared_mutex_hold);
     context_lock.unlock();
 
     // Signal only after releasing the mutex so a woken consumer can acquire the
