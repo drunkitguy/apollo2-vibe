@@ -2749,7 +2749,14 @@ namespace stream {
                                   platf::qos_data_type_e::video :
                                   platf::qos_data_type_e::audio;
     session->audio.qos = platf::enable_socket_qos(ref->audio_sock.native_handle(), address, session->audio.peer.port(), audio_qos_type, audio_qos_plan.dscp_tagging);
-    BOOST_LOG(info) << "Audio QoS: "sv << stream_qos::to_string(audio_qos) << " (client requested: "sv << (audio_qos_requested ? "yes"sv : "no"sv) << ')';
+    BOOST_LOG(info) << "Audio QoS: "sv << stream_qos::to_string(audio_qos)
+                    << " (client requested: "sv << (audio_qos_requested ? "yes"sv : "no"sv)
+                    << ", DSCP tagging: "sv << (audio_qos_plan.dscp_tagging ? "yes"sv : "no"sv)
+                    << ", traffic type: "sv << stream_qos::to_string(audio_qos_plan.traffic_type)
+                    << ", socket QoS set: "sv << (session->audio.qos ? "yes"sv : "no"sv) << ')';
+    if (audio_qos_plan.dscp_tagging && !session->audio.qos) {
+      BOOST_LOG(warning) << "Audio QoS tagging was requested but could not be set on the audio socket (qWAVE unavailable or refused)"sv;
+    }
 
     BOOST_LOG(debug) << "Start capturing Audio"sv;
     audio::capture(session->mail, session->config.audio, session);

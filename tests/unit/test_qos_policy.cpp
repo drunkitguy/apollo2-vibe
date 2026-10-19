@@ -52,3 +52,8 @@ TEST(AudioQosPolicy, WithoutAClientRequestNothingIsTaggedAndThe122TypeIsKept) {
     EXPECT_EQ(plan_audio_qos(value, false), (audio_qos_plan_t {false, traffic_type_e::audio}));
   }
 }
+
+TEST(AudioQosPolicy, TrafficTypeNames) {
+  EXPECT_EQ(stream_qos::to_string(traffic_type_e::audio), "audio");
+  EXPECT_EQ(stream_qos::to_string(traffic_type_e::video), "video");
+}

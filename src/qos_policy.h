@@ -12,7 +12,7 @@ namespace stream_qos {
    * @brief Value of the `audio_qos` config option.
    */
   enum class audio_qos_e {
-    voice,  ///< Voice class, as in host 1.2.2. Wi-Fi access points map it to the WMM voice queue.
+    voice,  ///< Voice class, as in host 1.2.2. Many Wi-Fi access points map it to the WMM voice category.
     video,  ///< The same class as the video stream.
     off,  ///< No DSCP tag on audio packets.
   };
@@ -52,9 +52,13 @@ namespace stream_qos {
    * @brief Traffic type handed to platf::enable_socket_qos() for the audio socket.
    */
   enum class traffic_type_e {
-    audio,  ///< platf::qos_data_type_e::audio (qWAVE Voice, DSCP 48 on Linux).
-    video,  ///< platf::qos_data_type_e::video (qWAVE AudioVideo, DSCP 40 on Linux).
+    audio,  ///< platf::qos_data_type_e::audio (qWAVE Voice, DSCP 56; DSCP 48 on Linux).
+    video,  ///< platf::qos_data_type_e::video (qWAVE AudioVideo, DSCP 40; DSCP 40 on Linux).
   };
+
+  constexpr std::string_view to_string(const traffic_type_e value) noexcept {
+    return value == traffic_type_e::video ? "video" : "audio";
+  }
 
   struct audio_qos_plan_t {
     bool dscp_tagging;  ///< Passed as the dscp_tagging argument.

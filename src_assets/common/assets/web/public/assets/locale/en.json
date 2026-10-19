@@ -1073,7 +1073,7 @@
     "pacing_max_bitrate_kbps": "Pacing maximum bitrate (Kbps)",
     "packetsize": "Network packet size",
     "audio_qos": "Audio QoS class",
-    "audio_qos_desc": "QoS class of audio packets for clients that ask for QoS tagging on the local network. Video sends audio in the same Wi-Fi queue as video; Voice uses the Wi-Fi voice queue, as in 1.2.2; Off sets no tag.",
+    "audio_qos_desc": "QoS class of audio packets for clients that ask for QoS tagging on the local network. Video (DSCP 40) shares the Wi-Fi video category with the video stream; Voice (DSCP 56 on Windows) uses the voice category, as in 1.2.2, which some access points drop or delay under load; Off sets no tag.",
     "audio_qos_off": "Off",
     "audio_qos_video": "Video (default)",
     "audio_qos_voice": "Voice (1.2.2 behaviour)",

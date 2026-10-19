@@ -2166,8 +2166,10 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             QoS class of audio packets for clients that ask for QoS tagging. Moonlight clients ask for it on the
             local network; the client still decides whether any tagging applies.
-            Some Wi-Fi access points drop or delay packets in the voice queue under load, which can be heard as
-            crackling audio, so audio is tagged like video by default.
+            Many Wi-Fi access points map DSCP 48 and 56 to the WMM voice access category (AC_VO) and DSCP 40 to the
+            video access category (AC_VI). Some access points drop or delay packets in the voice category under
+            load, which can be heard as crackling audio, so audio is tagged like video by default. Audio then
+            shares the video category with the video stream; it is a small share of that traffic.
         </td>
     </tr>
     <tr>
@@ -2185,17 +2187,17 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td rowspan="3">Choices</td>
         <td>video</td>
-        <td>Tag audio like video (qWAVE AudioVideo on Windows, DSCP 40 on Linux).
-            Wi-Fi access points send audio in the same queue as video.</td>
+        <td>Tag audio like video: qWAVE AudioVideo on Windows (DSCP 40, CS5), DSCP 40 on Linux. On Linux the
+            socket priority of audio also drops from 6 to 5, the value used for video.</td>
     </tr>
     <tr>
         <td>voice</td>
-        <td>Tag audio as voice (qWAVE Voice on Windows, DSCP 48 on Linux), the behaviour of
-            window-only host 1.2.2. Wi-Fi access points use the WMM voice queue.</td>
+        <td>Tag audio as voice, the behaviour of window-only host 1.2.2: qWAVE Voice on Windows (DSCP 56, CS7),
+            DSCP 48 (CS6) and socket priority 6 on Linux.</td>
     </tr>
     <tr>
         <td>off</td>
-        <td>Set no DSCP tag on audio packets.</td>
+        <td>Set no DSCP tag on audio packets, as for a client that asks for no QoS.</td>
     </tr>
 </table>
 
