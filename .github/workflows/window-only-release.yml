@@ -161,6 +161,17 @@ jobs:
           body: |
             Vibepollo host build with window-only capture. When a client asks for it, the stream shows only the window of the app launched from the client. The Windows desktop, taskbar, notifications and other windows are replaced by black.
 
+            ## What's new in 1.3
+
+            These changes target streaming over Wi-Fi. Each new default has a line for `sunshine.conf` in the `config` folder of the install directory that brings back the 1.2.2 behaviour; restart the host after adding it. Both options are also on the Network page of the web UI.
+
+            - Video pacing: each video frame is now sent at 4 times the stream bitrate, kept between 300 and 800 Mbps, instead of always at 800 Mbps. A 100 Mbps stream is sent at 400 Mbps, which Wi-Fi access points deliver more evenly. To go back, add `pacing_mode = legacy`. A `pacing_max_bitrate_kbps` value you set yourself still wins over both modes.
+            - Audio QoS: for clients that ask for QoS tagging, audio packets are now tagged like video instead of as voice. Some Wi-Fi access points drop or delay packets in their voice queue under load, which can be heard as crackling audio. To go back, add `audio_qos = voice`. `audio_qos = off` sets no tag on audio.
+            - The capture helper no longer exits when Windows refuses the realtime GPU priority, for example for a user without the privilege to raise priorities. It enables that privilege when the account holds it, falls back to high GPU priority, and otherwise keeps the default. The stream starts either way.
+            - At the debug log level, the host and the capture helper log every 20 seconds how long the window capture copy path waits for and copies each frame.
+
+            How much the pacing and audio changes help depends on the network. If a stream gets worse after the update, compare with `pacing_mode = legacy` and `audio_qos = voice` on that network.
+
             ## What's new in 1.2
 
             - Menus, dropdowns, tooltips, context menus and dialogs of the launched app now appear in the stream at their true position and in their true stacking order, including file pickers and dialogs opened from other dialogs.

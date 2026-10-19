@@ -472,6 +472,19 @@ Out of scope. The capture and helper threads already use MMCSS and `THREAD_PRIOR
 - `.github/window-only-host-version.txt` 1.2.2 to 1.3.0, following the pattern of commit fa51a47.
 - Release notes (wherever the host release body is kept): the auto pacing default and `pacing_mode=legacy`, `audio_qos`, the helper startup fix, and the new debug timers.
 
+### Host implementation notes (1.3.0)
+
+Where the implementation differs from or refines the items above:
+
+- H1: the fatal-step table is `platf::dxgi::wgc_policy::helper_init_step_required()` in `src/platform/windows/wgc_capture_policy.h`, tested in `tests/unit/test_window_capture_policy.cpp`. The helper logs "GPU scheduling priority set to REALTIME" or "... to HIGH", or a warning when both are refused.
+- H2: the policy lives in namespace `stream_qos` (`src/qos_policy.h`). The plan's `qos_plan_t` returns its own `traffic_type_e` so the test does not need `platform/common.h`; `stream.cpp` maps it to `platf::qos_data_type_e`. Without a client request, and with `audio_qos=off`, the socket is set up exactly like a 1.2.2 session whose client asked for no QoS (type audio, no DSCP tag).
+- H2 also documents the existing `text_field_detection` and `text_field_numeric_hints` options, which were missing from `docs/configuration.md` and `en.json` and kept the config catalog contract test from passing.
+- H2 and H3: `audio_qos`, `pacing_mode` and `pacing_auto_multiplier_percent` are in a new "Stream traffic" group on the Network page of the web UI.
+- H3: the policy lives in namespace `stream_pacing` (`src/stream_pacing_policy.h`) and returns where the rate came from, so the existing one-time warning for an explicit cap below the stream bitrate is kept. The info line "Video pacing: <source>, <N> Mbps (stream <M> Mbps)" is logged when a session starts sending and again only if its rate changes (the bitrate can change mid-session).
+- H4: the helper does not link `config.cpp`, so it cannot use `logging::min_max_avg_periodic_logger`; it has a small equivalent (`helper_debug_timer_t`) enabled by the log level the host sends. Helper lines: "WGC helper: shared texture keyed mutex wait", "WGC helper: copy and publish to shared texture", "WGC helper: copy or composite into scratch texture". Host lines: "WGC host: shared texture keyed mutex wait", "WGC host: copy to encoder image". All at debug level, every 20 seconds.
+- The new policy tests run in the window-only Windows CI ("Test stream network policy" step).
+- None of the benefits are measured yet; they need the measurement protocol below on the target network.
+
 ### Host commit order
 
 1. H1: helper GPU priority best effort, plus the policy table and test.
