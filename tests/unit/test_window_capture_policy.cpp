@@ -6,10 +6,19 @@
 #include <vector>
 
 namespace {
+  using platf::dxgi::window_policy::app_window_t;
+  using platf::dxgi::window_policy::build_app_pids;
   using platf::dxgi::window_policy::choose_target;
+  using platf::dxgi::window_policy::compute_layer_blit;
   using platf::dxgi::window_policy::compute_window_blit;
+  using platf::dxgi::window_policy::is_secondary_window;
+  using platf::dxgi::window_policy::layer_content_ready;
+  using platf::dxgi::window_policy::layer_t;
+  using platf::dxgi::window_policy::max_secondary_layers;
   using platf::dxgi::window_policy::placement_action_e;
+  using platf::dxgi::window_policy::plan_layers;
   using platf::dxgi::window_policy::plan_placement;
+  using platf::dxgi::window_policy::plan_secondary_move;
   using platf::dxgi::window_policy::rect_i;
   using platf::dxgi::window_policy::selection_mode_e;
   using platf::dxgi::window_policy::selection_mode_for;
@@ -54,6 +63,42 @@ namespace {
       .iconic = iconic,
       .client_area = area,
     };
+  }
+
+  window_candidate_t candidate_of(
+    const std::uintptr_t id,
+    const std::uint32_t pid,
+    const std::int64_t area,
+    const bool is_foreground = false,
+    const bool matches_app = true
+  ) {
+    auto c = candidate(id, area, matches_app, is_foreground);
+    c.pid = pid;
+    return c;
+  }
+
+  app_window_t app_window(const std::uintptr_t id, const std::uint32_t pid, const rect_i bounds) {
+    return app_window_t {
+      .id = id,
+      .pid = pid,
+      .visible = true,
+      .cloaked = false,
+      .iconic = false,
+      .root = true,
+      .shadow = false,
+      .transparent = false,
+      .bounds = bounds,
+    };
+  }
+
+  constexpr std::array<std::uint32_t, 2> app_pids {100, 200};
+  constexpr std::uintptr_t target_id = 1;
+  constexpr rect_i main_bounds {0, 0, 1920, 1080};
+
+  std::vector<layer_t> plan(const std::vector<app_window_t> &windows, const std::uintptr_t target, const std::span<const std::uint32_t> pids, const std::size_t cap = max_secondary_layers) {
+    std::vector<layer_t> out(cap + 1);
+    out.resize(plan_layers(windows, target, pids, primary_output, out));
+    return out;
   }
 }  // namespace
 
@@ -427,4 +472,312 @@ TEST(WindowCapturePolicy, PlacementLeavesAFixedWindowAlreadyOnTheOutput) {
   constexpr rect_i client {108, 131, 908, 731};
 
   EXPECT_EQ(plan_placement(primary_output, window, client, false, false, false).action, placement_action_e::none);
+}
+
+TEST(WindowCapturePolicy, SmallerForegroundWindowOfTheTargetProcessDoesNotReplaceTheTarget) {
+  // An unowned dialog or message box of the app is drawn as a secondary window instead.
+  const std::array candidates {
+    candidate_of(1, 100, 2'073'600),
+    candidate_of(2, 100, 200'000, true),
+  };
+
+  EXPECT_EQ(choose_target(candidates, 1, selection_mode_e::app_matcher), 1u);
+  EXPECT_EQ(choose_target(candidates, 1, selection_mode_e::desktop), 1u);
+}
+
+TEST(WindowCapturePolicy, LargerForegroundWindowOfTheTargetProcessStillWins) {
+  const std::array candidates {
+    candidate_of(1, 100, 200'000),
+    candidate_of(2, 100, 2'073'600, true),
+  };
+
+  EXPECT_EQ(choose_target(candidates, 1, selection_mode_e::app_matcher), 2u);
+}
+
+TEST(WindowCapturePolicy, ForegroundWindowOfAnotherEligibleProcessStillWins) {
+  // Launcher to game hand-off: the game window is smaller but belongs to another process.
+  const std::array candidates {
+    candidate_of(1, 100, 2'073'600),
+    candidate_of(2, 300, 921'600, true),
+  };
+
+  EXPECT_EQ(choose_target(candidates, 1, selection_mode_e::app_matcher), 2u);
+}
+
+TEST(WindowCapturePolicy, CandidatesWithoutAProcessIdKeepTheOldForegroundRule) {
+  const std::array candidates {
+    candidate_of(1, 0, 2'073'600),
+    candidate_of(2, 0, 200'000, true),
+  };
+  EXPECT_EQ(choose_target(candidates, 1, selection_mode_e::app_matcher), 2u);
+
+  const std::array mixed {
+    candidate_of(1, 100, 2'073'600),
+    candidate_of(2, 0, 200'000, true),
+  };
+  EXPECT_EQ(choose_target(mixed, 1, selection_mode_e::app_matcher), 2u);
+}
+
+TEST(WindowCapturePolicy, SameProcessRuleNeedsAnEligibleCurrentTarget) {
+  const std::array candidates {
+    candidate_of(1, 100, 2'073'600, false, false),
+    candidate_of(2, 100, 200'000, true),
+  };
+
+  // The current target is not eligible (it no longer matches the app), so the dialog wins.
+  EXPECT_EQ(choose_target(candidates, 1, selection_mode_e::app_matcher), 2u);
+  // Without a current target the foreground window wins as before.
+  EXPECT_EQ(choose_target(candidates, 0, selection_mode_e::app_matcher), 2u);
+}
+
+TEST(WindowCapturePolicy, LayerBlitCopiesAPopupInsideTheOutputWhole) {
+  constexpr rect_i popup {300, 120, 520, 400};
+
+  const auto blit = compute_layer_blit(primary_output, popup, 220, 280);
+
+  expect_blit(blit, 0, 0, 220, 280, 300, 120);
+  EXPECT_FALSE(blit.covers_output);
+}
+
+TEST(WindowCapturePolicy, LayerBlitClipsAPopupStraddlingTheRightEdge) {
+  constexpr rect_i popup {1800, 500, 2000, 700};
+
+  const auto blit = compute_layer_blit(primary_output, popup, 200, 200);
+
+  expect_blit(blit, 0, 0, 120, 200, 1800, 500);
+}
+
+TEST(WindowCapturePolicy, LayerBlitClipsADialogLargerThanTheOutput) {
+  constexpr rect_i dialog {-10, -20, 2000, 1200};
+
+  const auto blit = compute_layer_blit(primary_output, dialog, 2010, 1220);
+
+  expect_blit(blit, 10, 20, 1930, 1100, 0, 0);
+  EXPECT_TRUE(blit.covers_output);
+}
+
+TEST(WindowCapturePolicy, LayerBlitOfAWindowOnAnotherDisplayIsEmpty) {
+  constexpr rect_i popup {2000, 100, 2200, 300};
+
+  EXPECT_TRUE(compute_layer_blit(primary_output, popup, 200, 200).empty);
+}
+
+TEST(WindowCapturePolicy, LayerBlitUsesOnlyTheValidContentDuringAResize) {
+  constexpr rect_i dialog {100, 100, 900, 700};
+
+  expect_blit(compute_layer_blit(primary_output, dialog, 640, 480), 0, 0, 640, 480, 100, 100);
+  // Content larger than the bounds is limited to the bounds.
+  expect_blit(compute_layer_blit(primary_output, dialog, 1000, 1000), 0, 0, 800, 600, 100, 100);
+}
+
+TEST(WindowCapturePolicy, LayerBlitHandlesOutputsAwayFromTheOriginAndNegativeCoordinates) {
+  constexpr rect_i virtual_output {2560, 0, 4480, 1080};
+  expect_blit(compute_layer_blit(virtual_output, {2600, 40, 2800, 240}, 200, 200), 0, 0, 200, 200, 40, 40);
+
+  constexpr rect_i left_output {-1920, 0, 0, 1080};
+  expect_blit(compute_layer_blit(left_output, {-100, 50, 100, 250}, 200, 200), 0, 0, 100, 200, 1820, 50);
+}
+
+TEST(WindowCapturePolicy, AppPopupIsPlannedAboveTheTarget) {
+  // Qt menus are unowned topmost popups of the app's process; they come first in z-order.
+  const std::vector windows {
+    app_window(5, 100, {200, 30, 420, 400}),
+    app_window(target_id, 100, main_bounds),
+  };
+
+  const auto layers = plan(windows, target_id, app_pids);
+
+  ASSERT_EQ(layers.size(), 2u);
+  EXPECT_EQ(layers[0].id, target_id);
+  EXPECT_TRUE(layers[0].is_target);
+  EXPECT_EQ(layers[1].id, 5u);
+  EXPECT_FALSE(layers[1].is_target);
+  EXPECT_FALSE(layers[1].below_target);
+}
+
+TEST(WindowCapturePolicy, PopupOfAForeignProcessIsNeverPlanned) {
+  const std::vector windows {
+    app_window(5, 999, {200, 30, 420, 400}),
+    app_window(target_id, 100, main_bounds),
+  };
+
+  const auto layers = plan(windows, target_id, app_pids);
+
+  ASSERT_EQ(layers.size(), 1u);
+  EXPECT_TRUE(layers[0].is_target);
+  EXPECT_FALSE(is_secondary_window(windows[0], target_id, app_pids, primary_output));
+}
+
+TEST(WindowCapturePolicy, HiddenCloakedIconicChildShadowAndTransparentWindowsAreSkipped) {
+  constexpr rect_i bounds {200, 30, 420, 400};
+  auto hidden = app_window(10, 100, bounds);
+  hidden.visible = false;
+  auto cloaked = app_window(11, 100, bounds);
+  cloaked.cloaked = true;
+  auto iconic = app_window(12, 100, bounds);
+  iconic.iconic = true;
+  auto child = app_window(13, 100, bounds);
+  child.root = false;
+  auto shadow = app_window(14, 100, bounds);
+  shadow.shadow = true;
+  auto transparent = app_window(15, 100, bounds);
+  transparent.transparent = true;
+  auto empty = app_window(16, 100, {200, 30, 200, 400});
+  const auto shown = app_window(17, 200, bounds);
+
+  for (const auto &w : {hidden, cloaked, iconic, child, shadow, transparent, empty}) {
+    EXPECT_FALSE(is_secondary_window(w, target_id, app_pids, primary_output)) << w.id;
+  }
+  EXPECT_TRUE(is_secondary_window(shown, target_id, app_pids, primary_output));
+
+  const std::vector windows {hidden, cloaked, iconic, child, shadow, transparent, empty, shown, app_window(target_id, 100, main_bounds)};
+  const auto layers = plan(windows, target_id, app_pids);
+  ASSERT_EQ(layers.size(), 2u);
+  EXPECT_EQ(layers[1].id, 17u);
+}
+
+TEST(WindowCapturePolicy, WindowOutsideTheOutputIsSkipped) {
+  const auto elsewhere = app_window(5, 100, {1920, 0, 2200, 300});
+  const auto touching = app_window(6, 100, {-300, 0, 0, 300});
+  const auto partly = app_window(7, 100, {1800, 0, 2200, 300});
+
+  EXPECT_FALSE(is_secondary_window(elsewhere, target_id, app_pids, primary_output));
+  EXPECT_FALSE(is_secondary_window(touching, target_id, app_pids, primary_output));
+  EXPECT_TRUE(is_secondary_window(partly, target_id, app_pids, primary_output));
+}
+
+TEST(WindowCapturePolicy, LayersKeepTheZOrderBottomUpAndMarkWindowsBelowTheTarget) {
+  const std::vector windows {
+    app_window(7, 100, {500, 500, 700, 700}),  // tooltip, topmost
+    app_window(6, 200, {400, 400, 900, 900}),  // dropdown of a helper process
+    app_window(target_id, 100, main_bounds),
+    app_window(4, 100, {100, 100, 600, 600}),  // tool palette below the main window
+  };
+
+  const auto layers = plan(windows, target_id, app_pids);
+
+  ASSERT_EQ(layers.size(), 4u);
+  EXPECT_EQ(layers[0].id, 4u);
+  EXPECT_TRUE(layers[0].below_target);
+  EXPECT_EQ(layers[1].id, target_id);
+  EXPECT_TRUE(layers[1].is_target);
+  EXPECT_EQ(layers[2].id, 6u);
+  EXPECT_FALSE(layers[2].below_target);
+  EXPECT_EQ(layers[3].id, 7u);
+  EXPECT_FALSE(layers[3].below_target);
+}
+
+TEST(WindowCapturePolicy, MoreSecondaryWindowsThanTheCapKeepTheTopmost) {
+  std::vector<app_window_t> windows;
+  for (std::uintptr_t id = 100; id < 100 + max_secondary_layers + 4; ++id) {
+    windows.push_back(app_window(id, 100, {10, 10, 50, 50}));
+  }
+  windows.push_back(app_window(target_id, 100, main_bounds));
+
+  const auto layers = plan(windows, target_id, app_pids);
+
+  ASSERT_EQ(layers.size(), max_secondary_layers + 1);
+  EXPECT_TRUE(layers.front().is_target);
+  // Bottom-up: the last layer is the topmost window, the first secondary the 16th from the top.
+  EXPECT_EQ(layers.back().id, 100u);
+  EXPECT_EQ(layers[1].id, 100u + max_secondary_layers - 1);
+}
+
+TEST(WindowCapturePolicy, MinimizedTargetMissingFromTheListStillYieldsSecondaryWindows) {
+  const std::vector windows {
+    app_window(5, 100, {200, 30, 420, 400}),
+    app_window(6, 200, {600, 30, 820, 400}),
+  };
+
+  const auto layers = plan(windows, target_id, app_pids);
+
+  ASSERT_EQ(layers.size(), 2u);
+  EXPECT_EQ(layers[0].id, 6u);
+  EXPECT_EQ(layers[1].id, 5u);
+  EXPECT_FALSE(layers[0].below_target);
+  EXPECT_FALSE(layers[1].below_target);
+}
+
+TEST(WindowCapturePolicy, EmptyAppProcessSetPlansOnlyTheTarget) {
+  const std::vector windows {
+    app_window(5, 100, {200, 30, 420, 400}),
+    app_window(target_id, 100, main_bounds),
+  };
+
+  const auto layers = plan(windows, target_id, std::span<const std::uint32_t> {});
+
+  ASSERT_EQ(layers.size(), 1u);
+  EXPECT_TRUE(layers[0].is_target);
+}
+
+TEST(WindowCapturePolicy, LayerPlanWithoutRoomWritesNothing) {
+  const std::vector windows {app_window(target_id, 100, main_bounds)};
+  std::span<layer_t> none;
+
+  EXPECT_EQ(plan_layers(windows, target_id, app_pids, primary_output, none), 0u);
+}
+
+TEST(WindowCapturePolicy, AppProcessSetKeepsTheTargetFirstAndIsSorted) {
+  const std::vector<std::uint32_t> seeds {300, 50, 300, 4, 0, 70, 50};
+  const std::vector<std::uint32_t> excluded {4, 70};
+
+  EXPECT_EQ(build_app_pids(200, seeds, excluded, 62), (std::vector<std::uint32_t> {50, 200, 300}));
+  // The target survives the cap; seeds fill the rest in order.
+  EXPECT_EQ(build_app_pids(200, seeds, excluded, 2), (std::vector<std::uint32_t> {200, 300}));
+  EXPECT_EQ(build_app_pids(200, seeds, excluded, 1), (std::vector<std::uint32_t> {200}));
+  // An excluded target is dropped too, and nothing is left without a target or seeds.
+  EXPECT_EQ(build_app_pids(70, {}, excluded, 62), (std::vector<std::uint32_t> {}));
+  EXPECT_EQ(build_app_pids(0, {}, {}, 62), (std::vector<std::uint32_t> {}));
+}
+
+TEST(WindowCapturePolicy, DialogInsideTheOutputIsNotMoved) {
+  EXPECT_FALSE(plan_secondary_move(primary_output, {400, 300, 1000, 800}).has_value());
+}
+
+TEST(WindowCapturePolicy, DialogOnAnotherMonitorIsCentredOnTheOutput) {
+  constexpr rect_i output {1920, 0, 3840, 1080};
+
+  const auto moved = plan_secondary_move(output, {400, 300, 1000, 800});
+
+  ASSERT_TRUE(moved.has_value());
+  EXPECT_EQ(moved->left, 2580);
+  EXPECT_EQ(moved->top, 290);
+  EXPECT_EQ(moved->right, 3180);
+  EXPECT_EQ(moved->bottom, 790);
+}
+
+TEST(WindowCapturePolicy, DialogLargerThanTheOutputIsAlignedToItsTopLeft) {
+  constexpr rect_i output {1920, 0, 3840, 1080};
+
+  const auto moved = plan_secondary_move(output, {0, 0, 2400, 1300});
+
+  ASSERT_TRUE(moved.has_value());
+  EXPECT_EQ(moved->left, 1920);
+  EXPECT_EQ(moved->top, 0);
+  EXPECT_EQ(moved->right, 4320);
+  EXPECT_EQ(moved->bottom, 1300);
+
+  // Larger on one axis only: aligned on that axis, centred on the other.
+  const auto wide = plan_secondary_move(output, {0, 0, 2400, 600});
+  ASSERT_TRUE(wide.has_value());
+  EXPECT_EQ(wide->left, 1920);
+  EXPECT_EQ(wide->top, 240);
+}
+
+TEST(WindowCapturePolicy, DialogHalfInsideTheOutputIsLeftAlone) {
+  // Exactly half inside stays; less than half inside moves.
+  EXPECT_FALSE(plan_secondary_move(primary_output, {1720, 100, 2120, 300}).has_value());
+  EXPECT_TRUE(plan_secondary_move(primary_output, {1721, 100, 2121, 300}).has_value());
+  EXPECT_FALSE(plan_secondary_move(primary_output, {100, 100, 100, 300}).has_value());
+}
+
+TEST(WindowCapturePolicy, LayerIsDrawnOnlyWithContentNewerThanItsShowOrAfterTheReuseDelay) {
+  // No frame yet: never drawn.
+  EXPECT_FALSE(layer_content_ready(0, 100, 1'000, 100));
+  // A frame at or after the show is drawn at once.
+  EXPECT_TRUE(layer_content_ready(150, 100, 150, 100));
+  EXPECT_TRUE(layer_content_ready(100, 100, 100, 100));
+  // A reused window with an older frame waits for the reuse delay.
+  EXPECT_FALSE(layer_content_ready(50, 100, 150, 100));
+  EXPECT_TRUE(layer_content_ready(50, 100, 200, 100));
 }

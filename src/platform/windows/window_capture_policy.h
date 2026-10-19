@@ -1,8 +1,11 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
+#include <vector>
 
 namespace platf::dxgi::window_policy {
   struct rect_i {
@@ -76,6 +79,7 @@ namespace platf::dxgi::window_policy {
     bool iconic;
     std::int64_t client_area;
     bool new_since_launch = false;  ///< The window was not visible when the app was launched.
+    std::uint32_t pid = 0;  ///< Process of the window; 0 disables the same-process rule for it.
   };
 
   /**
@@ -137,17 +141,30 @@ namespace platf::dxgi::window_policy {
         return false;
       };
 
-      for (const auto &c : candidates) {
-        if (c.is_foreground && eligible(c)) {
-          return c.id;
-        }
-      }
+      const window_candidate_t *current_candidate = nullptr;
       if (current != 0) {
         for (const auto &c : candidates) {
           if (c.id == current && eligible(c)) {
-            return c.id;
+            current_candidate = &c;
+            break;
           }
         }
+      }
+
+      for (const auto &c : candidates) {
+        if (!c.is_foreground || !eligible(c)) {
+          continue;
+        }
+        // A smaller foreground window of the target's own process (an unowned dialog or
+        // message box) is drawn as a secondary window instead of replacing the target.
+        if (current_candidate != nullptr && c.id != current_candidate->id && c.pid != 0 &&
+            c.pid == current_candidate->pid && c.client_area < current_candidate->client_area) {
+          continue;
+        }
+        return c.id;
+      }
+      if (current_candidate != nullptr) {
+        return current_candidate->id;
       }
       if (mode == selection_mode_e::desktop) {
         return 0;
@@ -172,6 +189,8 @@ namespace platf::dxgi::window_policy {
    * that existed before the launch and do not belong to the app are never chosen. In
    * desktop mode the foreground window is followed and the current target kept while it
    * remains a candidate. Minimized windows are only picked when nothing else qualifies.
+   * A foreground window does not replace the current target when both have the same
+   * non-zero `pid` and the foreground window's client area is smaller.
    */
   constexpr std::uintptr_t choose_target(
     const std::span<const window_candidate_t> candidates,
@@ -281,4 +300,216 @@ namespace platf::dxgi::window_policy {
       return false;
     }
   };
+
+  /**
+   * @brief Map the whole WGC surface of a secondary window (menu, popup, dialog) onto the
+   * capture output. Unlike the target, a secondary window keeps its frame and title bar.
+   * @param output Capture display rectangle in desktop coordinates.
+   * @param frame_bounds DWMWA_EXTENDED_FRAME_BOUNDS of the window, the origin of its WGC surface.
+   * @param content_w Valid width of the cached surface.
+   * @param content_h Valid height of the cached surface.
+   */
+  constexpr window_blit_t compute_layer_blit(
+    const rect_i output,
+    const rect_i frame_bounds,
+    const std::int32_t content_w,
+    const std::int32_t content_h
+  ) noexcept {
+    return compute_window_blit(output, frame_bounds, frame_bounds, content_w, content_h);
+  }
+
+  /**
+   * @brief State of one top-level window, as read by the capture helper.
+   */
+  struct app_window_t {
+    std::uintptr_t id = 0;
+    std::uint32_t pid = 0;  ///< Process whose content the window shows.
+    bool visible = false;
+    bool cloaked = false;
+    bool iconic = false;
+    bool root = false;  ///< GetAncestor(GA_ROOT) is the window itself.
+    bool shadow = false;  ///< SysShadow, the system drop-shadow helper window.
+    bool transparent = false;  ///< Layered with zero alpha.
+    rect_i bounds {0, 0, 0, 0};  ///< DWMWA_EXTENDED_FRAME_BOUNDS.
+  };
+
+  struct layer_t {
+    std::uintptr_t id = 0;
+    bool is_target = false;
+    bool below_target = false;  ///< A secondary window that lies below the target in z-order.
+  };
+
+  /**
+   * @brief Maximum number of secondary windows drawn over the target.
+   */
+  constexpr std::size_t max_secondary_layers = 16;
+
+  /**
+   * @brief Maximum number of process ids in an app window set.
+   */
+  constexpr std::size_t max_app_pids = 62;
+
+  constexpr bool rects_intersect(const rect_i a, const rect_i b) noexcept {
+    return std::max(a.left, b.left) < std::min(a.right, b.right) &&
+           std::max(a.top, b.top) < std::min(a.bottom, b.bottom);
+  }
+
+  /**
+   * @brief True for a visible top-level window of the app, other than the target, that
+   * lies at least partly on the capture output and is drawn as its own layer.
+   * @param app_pids App process ids, sorted ascending.
+   */
+  constexpr bool is_secondary_window(
+    const app_window_t &w,
+    const std::uintptr_t target,
+    const std::span<const std::uint32_t> app_pids,
+    const rect_i output
+  ) noexcept {
+    if (w.id == 0 || w.id == target || w.pid == 0) {
+      return false;
+    }
+    if (!w.visible || w.cloaked || w.iconic || !w.root || w.shadow || w.transparent) {
+      return false;
+    }
+    if (!std::binary_search(app_pids.begin(), app_pids.end(), w.pid)) {
+      return false;
+    }
+    if (w.bounds.right <= w.bounds.left || w.bounds.bottom <= w.bounds.top) {
+      return false;
+    }
+    return rects_intersect(w.bounds, output);
+  }
+
+  /**
+   * @brief Order the target and the app's secondary windows for compositing.
+   *
+   * Keeps the target (when it is in the list, whatever its state) and the topmost
+   * secondary windows, at most `out.size() - 1` of them, and writes them bottom-up.
+   * Secondary windows below the target are marked `below_target`.
+   * @param windows_top_down Top-level windows in EnumWindows (top-down) order.
+   * @param app_pids App process ids, sorted ascending.
+   * @param out Receives the layers bottom-up; its size is the layer cap plus one.
+   * @return Number of layers written.
+   */
+  constexpr std::size_t plan_layers(
+    const std::span<const app_window_t> windows_top_down,
+    const std::uintptr_t target,
+    const std::span<const std::uint32_t> app_pids,
+    const rect_i output,
+    const std::span<layer_t> out
+  ) noexcept {
+    if (out.empty()) {
+      return 0;
+    }
+
+    const std::size_t max_secondary = out.size() - 1;
+    std::size_t count = 0;
+    std::size_t secondary = 0;
+    bool target_seen = false;
+    // Collect top-down first, then reverse in place.
+    for (const auto &w : windows_top_down) {
+      if (target != 0 && w.id == target) {
+        if (!target_seen) {
+          target_seen = true;
+          out[count++] = layer_t {w.id, true, false};
+        }
+        continue;
+      }
+      if (secondary >= max_secondary || !is_secondary_window(w, target, app_pids, output)) {
+        continue;
+      }
+      out[count++] = layer_t {w.id, false, target_seen};
+      ++secondary;
+    }
+    std::reverse(out.begin(), out.begin() + static_cast<std::ptrdiff_t>(count));
+    return count;
+  }
+
+  /**
+   * @brief Build the sorted app process set sent to the capture helper.
+   *
+   * The target's process is kept first when the cap applies, then the seeds in order.
+   * PID 0, duplicates and excluded PIDs are dropped. The result is sorted ascending.
+   */
+  inline std::vector<std::uint32_t> build_app_pids(
+    const std::uint32_t target_pid,
+    const std::span<const std::uint32_t> seeds,
+    const std::span<const std::uint32_t> excluded,
+    const std::size_t max_pids
+  ) {
+    std::vector<std::uint32_t> pids;
+    const auto add = [&](const std::uint32_t pid) {
+      if (pid == 0 || pids.size() >= max_pids ||
+          std::find(excluded.begin(), excluded.end(), pid) != excluded.end() ||
+          std::find(pids.begin(), pids.end(), pid) != pids.end()) {
+        return;
+      }
+      pids.push_back(pid);
+    };
+
+    add(target_pid);
+    for (const auto pid : seeds) {
+      add(pid);
+    }
+    std::sort(pids.begin(), pids.end());
+    return pids;
+  }
+
+  /**
+   * @brief Where to move a dialog of the app so the stream shows it.
+   * @param output Capture display rectangle in desktop coordinates.
+   * @param window_rect GetWindowRect of the dialog.
+   * @return The rectangle centred on the output (aligned to its top or left edge on an axis
+   * where the window is larger) when less than half of the window lies on the output,
+   * otherwise nothing.
+   */
+  constexpr std::optional<rect_i> plan_secondary_move(const rect_i output, const rect_i window_rect) noexcept {
+    const std::int64_t window_w = std::int64_t {window_rect.right} - window_rect.left;
+    const std::int64_t window_h = std::int64_t {window_rect.bottom} - window_rect.top;
+    const std::int64_t output_w = std::int64_t {output.right} - output.left;
+    const std::int64_t output_h = std::int64_t {output.bottom} - output.top;
+    if (window_w <= 0 || window_h <= 0 || output_w <= 0 || output_h <= 0) {
+      return std::nullopt;
+    }
+
+    const std::int64_t inside_w = std::max<std::int64_t>(
+      0,
+      std::min<std::int64_t>(window_rect.right, output.right) - std::max<std::int64_t>(window_rect.left, output.left)
+    );
+    const std::int64_t inside_h = std::max<std::int64_t>(
+      0,
+      std::min<std::int64_t>(window_rect.bottom, output.bottom) - std::max<std::int64_t>(window_rect.top, output.top)
+    );
+    if (2 * inside_w * inside_h >= window_w * window_h) {
+      return std::nullopt;
+    }
+
+    const std::int64_t left = window_w <= output_w ? output.left + (output_w - window_w) / 2 : output.left;
+    const std::int64_t top = window_h <= output_h ? output.top + (output_h - window_h) / 2 : output.top;
+    return rect_i {
+      static_cast<std::int32_t>(left),
+      static_cast<std::int32_t>(top),
+      static_cast<std::int32_t>(left + window_w),
+      static_cast<std::int32_t>(top + window_h),
+    };
+  }
+
+  /**
+   * @brief True when a secondary layer may be drawn.
+   *
+   * A layer is drawn once it delivered a frame after it was last shown. A reused window
+   * whose content did not change may never deliver one, so its cached frame is used once
+   * `reuse_delay` has passed since the show. Times share one clock; zero means never.
+   */
+  constexpr bool layer_content_ready(
+    const std::int64_t frame_at,
+    const std::int64_t shown_at,
+    const std::int64_t now,
+    const std::int64_t reuse_delay
+  ) noexcept {
+    if (frame_at == 0) {
+      return false;
+    }
+    return frame_at >= shown_at || now - shown_at >= reuse_delay;
+  }
 }  // namespace platf::dxgi::window_policy
