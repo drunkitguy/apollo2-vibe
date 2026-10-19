@@ -70,6 +70,12 @@ namespace platf::foreground_app {
   bool is_desktop_ui_window(HWND hwnd, std::string_view executable);
 
   /**
+   * @brief True when the executable is part of the Windows desktop UI (Explorer, Start, search,
+   * the touch keyboard, the lock screen, Settings or the UWP frame host).
+   */
+  bool is_windows_desktop_ui_process(std::string_view executable);
+
+  /**
    * @brief True for overlay windows that window-only capture must never select.
    *
    * Layered windows count only when they are click-through or non-activating, captionless and

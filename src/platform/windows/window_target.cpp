@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // platform includes
@@ -42,6 +43,11 @@ namespace platf::window_target {
     constexpr auto app_selection_refresh = 1s;
     constexpr std::size_t max_cached_processes = 1024;
     constexpr auto process_revalidate_interval = 1s;
+    // Owner chains are short; the bound only guards against a cycle.
+    constexpr int max_owner_walk = 32;
+    constexpr std::size_t max_remembered_windows = 1024;
+    // The System process; never part of an app.
+    constexpr std::uint32_t system_pid = 4;
 
     std::atomic<std::uint64_t> g_launch_time {0};
     // Survives display reinitialization so the choice stays sticky across capture restarts.
@@ -190,6 +196,26 @@ namespace platf::window_target {
       return *cache;
     }
 
+    // Secondary windows already logged, so each is logged once.
+    struct logged_windows_t {
+      std::mutex mutex;
+      std::unordered_set<std::uintptr_t> ids;
+    };
+
+    logged_windows_t &logged_secondary_windows() {
+      static auto *logged = new logged_windows_t {};
+      return *logged;
+    }
+
+    bool first_time_secondary(const std::uintptr_t id) {
+      auto &logged = logged_secondary_windows();
+      std::lock_guard lock(logged.mutex);
+      if (logged.ids.size() >= max_remembered_windows) {
+        logged.ids.clear();
+      }
+      return logged.ids.insert(id).second;
+    }
+
     using app_matcher_t = std::function<bool(DWORD, std::string_view)>;
 
     struct app_selection_t {
@@ -294,15 +320,67 @@ namespace platf::window_target {
 
     std::string describe_window(std::uintptr_t id);
 
+    /**
+     * @brief The topmost visible window in the owner chain of `hwnd`, or `hwnd` itself when
+     * none of its owners is visible. A window with a visible owner is a secondary window
+     * (dialog, owned popup) of that owner; owners that are all hidden (a hidden application
+     * window owning the main form) do not make a window secondary.
+     */
+    HWND visible_owner_root(HWND hwnd) {
+      HWND root = hwnd;
+      HWND owner = GetWindow(hwnd, GW_OWNER);
+      for (int step = 0; owner != nullptr && step < max_owner_walk; ++step) {
+        if (IsWindowVisible(owner)) {
+          root = owner;
+        }
+        owner = GetWindow(owner, GW_OWNER);
+      }
+      return root;
+    }
+
     struct enum_context_t {
       const std::optional<app_matcher_t> &matcher;
       const std::vector<std::uintptr_t> *launch_windows;
       std::uint64_t launch_time;
       HWND foreground;
       DWORD own_pid;
+      bool secondary_windows;  ///< Owned windows are secondary; candidates carry their process id.
+      bool collect_seeds;  ///< Collect the processes of visible windows that match the app.
       std::unordered_map<DWORD, process_info_t> processes;
       std::vector<window_policy::window_candidate_t> candidates;
+      std::uintptr_t foreground_root;  ///< Visible owner root of a foreground secondary window.
+      std::vector<std::uint32_t> seeds;
+      std::vector<std::uint32_t> excluded;
+      std::vector<DWORD> checked_pids;  ///< Processes already checked for seeds.
     };
+
+    const process_info_t &process_of(enum_context_t &context, const DWORD pid) {
+      auto process = context.processes.find(pid);
+      if (process == context.processes.end()) {
+        process = context.processes.emplace(pid, process_cache().query(pid)).first;
+      }
+      return process->second;
+    }
+
+    /**
+     * @brief Record the process of a visible top-level window as an app process when it
+     * matches the app, or as excluded when it is Windows desktop UI.
+     */
+    void collect_app_process(enum_context_t &context, HWND hwnd) {
+      const DWORD pid = content_process_id(hwnd);
+      if (pid == 0 || pid == context.own_pid ||
+          std::find(context.checked_pids.begin(), context.checked_pids.end(), pid) != context.checked_pids.end()) {
+        return;
+      }
+      context.checked_pids.push_back(pid);
+
+      const auto &info = process_of(context, pid);
+      if (foreground_app::is_windows_desktop_ui_process(info.executable)) {
+        context.excluded.push_back(pid);
+      } else if ((*context.matcher)(pid, info.executable)) {
+        context.seeds.push_back(pid);
+      }
+    }
 
     BOOL CALLBACK enum_candidate(HWND hwnd, LPARAM param) {
       auto &context = *reinterpret_cast<enum_context_t *>(param);
@@ -311,13 +389,32 @@ namespace platf::window_target {
         return TRUE;
       }
 
+      // Seeds are collected before the tool-window and overlay filters: menus and popups
+      // of a matching process make it part of the app too.
+      if (context.collect_seeds) {
+        collect_app_process(context, hwnd);
+      }
+
       const auto ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
       if ((ex_style & WS_EX_TOOLWINDOW) != 0 || foreground_app::is_window_selection_overlay(hwnd)) {
         return TRUE;
       }
 
       const bool is_foreground = hwnd == context.foreground;
-      if (GetWindow(hwnd, GW_OWNER) != nullptr && !is_foreground) {
+      if (context.secondary_windows) {
+        // A dialog or owned popup is drawn above its owner as a secondary window and never
+        // becomes the target. While it is active its owner counts as the foreground window.
+        if (const HWND root = visible_owner_root(hwnd); root != hwnd) {
+          const auto id = reinterpret_cast<std::uintptr_t>(hwnd);
+          if (is_foreground) {
+            context.foreground_root = reinterpret_cast<std::uintptr_t>(root);
+          }
+          if (first_time_secondary(id)) {
+            BOOST_LOG(debug) << "Window-only: secondary window "sv << describe_window(id);
+          }
+          return TRUE;
+        }
+      } else if (GetWindow(hwnd, GW_OWNER) != nullptr && !is_foreground) {
         return TRUE;
       }
 
@@ -332,11 +429,7 @@ namespace platf::window_target {
         return TRUE;
       }
 
-      auto process = context.processes.find(pid);
-      if (process == context.processes.end()) {
-        process = context.processes.emplace(pid, process_cache().query(pid)).first;
-      }
-      const auto &info = process->second;
+      const auto &info = process_of(context, pid);
 
       if (foreground_app::is_desktop_ui_window(hwnd, info.executable)) {
         const auto id = reinterpret_cast<std::uintptr_t>(hwnd);
@@ -355,6 +448,7 @@ namespace platf::window_target {
         .client_area = client_area,
         .new_since_launch = context.launch_windows &&
                             !std::binary_search(context.launch_windows->begin(), context.launch_windows->end(), reinterpret_cast<std::uintptr_t>(hwnd)),
+        .pid = context.secondary_windows ? static_cast<std::uint32_t>(pid) : 0u,
       });
       return TRUE;
     }
@@ -518,7 +612,7 @@ namespace platf::window_target {
     };
   }
 
-  std::uintptr_t choose(std::uintptr_t current) {
+  choose_result_t choose(std::uintptr_t current, const bool secondary_windows) {
     const auto selection = current_app_selection();
     const auto windows_at_launch = launch_windows();
 
@@ -528,16 +622,37 @@ namespace platf::window_target {
       .launch_time = filetime_ticks(launch_time()),
       .foreground = GetForegroundWindow(),
       .own_pid = GetCurrentProcessId(),
+      .secondary_windows = secondary_windows,
+      // Only the app matcher mode adds processes beyond the target's own.
+      .collect_seeds = secondary_windows && selection.mode == window_policy::selection_mode_e::app_matcher &&
+                       selection.matcher.has_value(),
       .processes = {},
       .candidates = {},
+      .foreground_root = 0,
+      .seeds = {},
+      .excluded = {},
+      .checked_pids = {},
     };
     EnumWindows(enum_candidate, reinterpret_cast<LPARAM>(&context));
 
-    return window_policy::choose_target(context.candidates, current, selection.mode);
+    if (context.foreground_root != 0) {
+      for (auto &candidate : context.candidates) {
+        if (candidate.id == context.foreground_root) {
+          candidate.is_foreground = true;
+        }
+      }
+    }
+
+    return choose_result_t {
+      .target = window_policy::choose_target(context.candidates, current, selection.mode),
+      .seeds = std::move(context.seeds),
+      .excluded = std::move(context.excluded),
+    };
   }
 
-  tracker_t::tracker_t(const RECT &output):
-      _output(output) {
+  tracker_t::tracker_t(const RECT &output, const bool secondary_windows):
+      _output(output),
+      _secondary_windows(secondary_windows) {
     _thread = std::jthread([this](std::stop_token stop_token) {
       run(stop_token);
     });
@@ -552,7 +667,8 @@ namespace platf::window_target {
   }
 
   std::uintptr_t tracker_t::select_now() {
-    const auto target = choose(g_last_target.load(std::memory_order_acquire));
+    const auto choice = choose(g_last_target.load(std::memory_order_acquire), _secondary_windows);
+    const auto target = choice.target;
 
     {
       std::lock_guard lock(_mutex);
@@ -562,6 +678,9 @@ namespace platf::window_target {
         .committed = target,
       };
       commit(target);
+      if (_secondary_windows) {
+        update_window_set(choice);
+      }
       _wake = true;
     }
     _cv.notify_all();
@@ -572,6 +691,96 @@ namespace platf::window_target {
     _committed.store(hwnd, std::memory_order_release);
     g_last_target.store(hwnd, std::memory_order_release);
     BOOST_LOG(info) << "Window-only target: "sv << describe_window(hwnd);
+  }
+
+  tracker_t::window_set_t tracker_t::window_set() const {
+    std::lock_guard lock(_mutex);
+    return _window_set;
+  }
+
+  void tracker_t::update_window_set(const choose_result_t &choice) {
+    const auto target = _debouncer.committed;
+    std::vector<std::uint32_t> pids;
+    if (target != 0) {
+      auto excluded = choice.excluded;
+      excluded.push_back(GetCurrentProcessId());
+      excluded.push_back(system_pid);
+      const DWORD target_pid = content_process_id(reinterpret_cast<HWND>(target));
+      pids = window_policy::build_app_pids(target_pid, choice.seeds, excluded, window_policy::max_app_pids);
+    }
+    if (target == _window_set.target && pids == _window_set.pids && _window_set.generation != 0) {
+      return;
+    }
+
+    _window_set.target = target;
+    _window_set.pids = std::move(pids);
+    _window_set.generation = _window_set_generation.load(std::memory_order_relaxed) + 1;
+    _window_set_generation.store(_window_set.generation, std::memory_order_release);
+    BOOST_LOG(debug) << "Window-only: app window set has "sv << _window_set.pids.size() << " process(es)"sv;
+  }
+
+  void tracker_t::place_secondary_windows(const std::uintptr_t target, const std::vector<std::uint32_t> &pids) {
+    if (target != _moved_for_target || _moved_windows.size() >= max_remembered_windows) {
+      _moved_for_target = target;
+      _moved_windows.clear();
+    }
+    if (target == 0 || pids.empty()) {
+      return;
+    }
+
+    struct dialogs_context_t {
+      HWND target;
+      const std::vector<std::uint32_t> &pids;
+      std::vector<HWND> dialogs;
+    } context {reinterpret_cast<HWND>(target), pids, {}};
+
+    // Dialogs (captioned, not tool windows) of the app; popups and menus are never moved.
+    EnumWindows(
+      [](HWND hwnd, LPARAM param) -> BOOL {
+        auto &context = *reinterpret_cast<dialogs_context_t *>(param);
+        if (hwnd == context.target || !IsWindowVisible(hwnd) || IsIconic(hwnd) || GetAncestor(hwnd, GA_ROOT) != hwnd) {
+          return TRUE;
+        }
+        const auto style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        const auto ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        if ((style & WS_CAPTION) != WS_CAPTION || (ex_style & WS_EX_TOOLWINDOW) != 0 || window_is_cloaked(hwnd)) {
+          return TRUE;
+        }
+        const DWORD pid = content_process_id(hwnd);
+        if (pid != 0 && std::binary_search(context.pids.begin(), context.pids.end(), static_cast<std::uint32_t>(pid))) {
+          context.dialogs.push_back(hwnd);
+        }
+        return TRUE;
+      },
+      reinterpret_cast<LPARAM>(&context)
+    );
+
+    for (HWND hwnd : context.dialogs) {
+      const auto id = reinterpret_cast<std::uintptr_t>(hwnd);
+      if (_moved_windows.contains(id) || IsHungAppWindow(hwnd)) {
+        continue;
+      }
+      RECT window_rect {};
+      if (!GetWindowRect(hwnd, &window_rect)) {
+        continue;
+      }
+      const auto moved = window_policy::plan_secondary_move(to_rect_i(_output), to_rect_i(window_rect));
+      if (!moved) {
+        continue;
+      }
+
+      _moved_windows.insert(id);
+      SetWindowPos(
+        hwnd,
+        nullptr,
+        moved->left,
+        moved->top,
+        0,
+        0,
+        SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS
+      );
+      BOOST_LOG(debug) << "Window-only: moved a secondary window onto the capture display: "sv << describe_window(id);
+    }
   }
 
   void tracker_t::run(std::stop_token stop_token) {
@@ -593,12 +802,23 @@ namespace platf::window_target {
       } else {
         const auto current = _debouncer.committed;
         lock.unlock();
-        const auto candidate = choose(current);
+        const auto choice = choose(current, _secondary_windows);
         lock.lock();
 
-        if (_debouncer.observe(candidate, polls_required)) {
+        if (_debouncer.observe(choice.target, polls_required)) {
           commit(_debouncer.committed);
         }
+        if (_secondary_windows) {
+          update_window_set(choice);
+        }
+      }
+
+      if (_secondary_windows) {
+        const auto app_target = _window_set.target;
+        const auto app_pids = _window_set.pids;
+        lock.unlock();
+        place_secondary_windows(app_target, app_pids);
+        lock.lock();
       }
 
       const auto target = _debouncer.committed;

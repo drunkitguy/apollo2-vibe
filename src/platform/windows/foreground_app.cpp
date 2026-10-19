@@ -802,4 +802,8 @@ namespace platf::foreground_app {
            process_is_windows_desktop_ui(executable);
   }
 
+  bool is_windows_desktop_ui_process(std::string_view executable) {
+    return process_is_windows_desktop_ui(executable);
+  }
+
 }  // namespace platf::foreground_app
