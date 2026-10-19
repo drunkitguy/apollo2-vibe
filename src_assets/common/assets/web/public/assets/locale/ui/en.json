@@ -1542,6 +1542,10 @@
         "network_security": {
           "title": "Stream and browser security"
         },
+        "network_traffic": {
+          "description": "How stream packets are marked and paced on the local network.",
+          "title": "Stream traffic"
+        },
         "pacing_capture": {
           "title": "Capture method"
         },

@@ -46,6 +46,7 @@ extern "C" {
 #include "nvhttp.h"
 #include "platform/common.h"
 #include "process.h"
+#include "qos_policy.h"
 #include "rtsp.h"
 #include "session_history.h"
 #include "stream.h"
@@ -2731,9 +2732,17 @@ namespace stream {
       return;
     }
 
-    // Enable local prioritization and QoS tagging on audio traffic if requested by the client
+    // Enable local prioritization and QoS tagging on audio traffic if requested by the client.
+    // audio_qos picks the class: voice is the 1.2.2 behaviour, video tags audio like video.
     auto address = session->audio.peer.address();
-    session->audio.qos = platf::enable_socket_qos(ref->audio_sock.native_handle(), address, session->audio.peer.port(), platf::qos_data_type_e::audio, session->config.audioQosType != 0);
+    const bool audio_qos_requested = session->config.audioQosType != 0;
+    const auto audio_qos = config::stream.audio_qos;
+    const auto audio_qos_plan = stream_qos::plan_audio_qos(audio_qos, audio_qos_requested);
+    const auto audio_qos_type = audio_qos_plan.traffic_type == stream_qos::traffic_type_e::video ?
+                                  platf::qos_data_type_e::video :
+                                  platf::qos_data_type_e::audio;
+    session->audio.qos = platf::enable_socket_qos(ref->audio_sock.native_handle(), address, session->audio.peer.port(), audio_qos_type, audio_qos_plan.dscp_tagging);
+    BOOST_LOG(info) << "Audio QoS: "sv << stream_qos::to_string(audio_qos) << " (client requested: "sv << (audio_qos_requested ? "yes"sv : "no"sv) << ')';
 
     BOOST_LOG(debug) << "Start capturing Audio"sv;
     audio::capture(session->mail, session->config.audio, session);

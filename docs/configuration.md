@@ -2158,6 +2158,47 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### audio_qos
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            QoS class of audio packets for clients that ask for QoS tagging. Moonlight clients ask for it on the
+            local network; the client still decides whether any tagging applies.
+            Some Wi-Fi access points drop or delay packets in the voice queue under load, which can be heard as
+            crackling audio, so audio is tagged like video by default.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            video
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            audio_qos = voice
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>video</td>
+        <td>Tag audio like video (qWAVE AudioVideo on Windows, DSCP 40 on Linux).
+            Wi-Fi access points send audio in the same queue as video.</td>
+    </tr>
+    <tr>
+        <td>voice</td>
+        <td>Tag audio as voice (qWAVE Voice on Windows, DSCP 48 on Linux), the behaviour of
+            window-only host 1.2.2. Wi-Fi access points use the WMM voice queue.</td>
+    </tr>
+    <tr>
+        <td>off</td>
+        <td>Set no DSCP tag on audio packets.</td>
+    </tr>
+</table>
+
 ## Config Files
 
 ### file_apps
@@ -4372,6 +4413,14 @@ Sets the maximum bitrate, in Kbps, considered by the network pacing policy. Set 
 ### packetsize
 
 Sets the maximum network packet size used for streaming. Set `0` to use the default behavior.
+
+### text_field_detection
+
+Windows only. Watches which control has keyboard focus on the host and tells the client whether a text, numeric or password field is focused, so the client can raise its on-screen keyboard. Default: `disabled`.
+
+### text_field_numeric_hints
+
+Windows only, and only used when `text_field_detection` is enabled. Lets the focus classifier treat a field as numeric from English keywords in its label, placeholder or automation id when the app publishes no structural numeric signal. A wrong guess shows a numeric keyboard for a text field. Default: `disabled`.
 
 <div class="section_buttons">
 

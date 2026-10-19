@@ -18,6 +18,7 @@
 
 // local includes
 #include "nvenc/nvenc_config.h"
+#include "qos_policy.h"
 
 namespace config {
   constexpr int SUNSHINE_VIRTUAL_DISPLAY_MAX_PERMANENT_COUNT = 4;
@@ -279,6 +280,9 @@ namespace config {
 
     // Limit the packetsize to avoid fragmentation on a low MTU link. 0 = off.
     int packetsize;
+
+    // QoS class of audio packets for clients that ask for QoS. voice is the 1.2.2 behaviour.
+    stream_qos::audio_qos_e audio_qos;
   };
 
   struct nvhttp_t {

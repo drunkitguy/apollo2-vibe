@@ -1071,7 +1071,16 @@
     "limit_framerate": "Limit frame rate",
     "nvenc_temporal_aq": "NVIDIA temporal adaptive quantization",
     "pacing_max_bitrate_kbps": "Pacing maximum bitrate (Kbps)",
-    "packetsize": "Network packet size"
+    "packetsize": "Network packet size",
+    "audio_qos": "Audio QoS class",
+    "audio_qos_desc": "QoS class of audio packets for clients that ask for QoS tagging on the local network. Video sends audio in the same Wi-Fi queue as video; Voice uses the Wi-Fi voice queue, as in 1.2.2; Off sets no tag.",
+    "audio_qos_off": "Off",
+    "audio_qos_video": "Video (default)",
+    "audio_qos_voice": "Voice (1.2.2 behaviour)",
+    "text_field_detection": "Detect focused text fields",
+    "text_field_detection_desc": "Tells the client whether a text, numeric or password field has keyboard focus on the host, so it can raise its on-screen keyboard.",
+    "text_field_numeric_hints": "Guess numeric fields from their labels",
+    "text_field_numeric_hints_desc": "Uses English keywords in a field's label or placeholder to detect numeric fields when the app does not mark them. A wrong guess shows a numeric keyboard for a text field."
   },
   "index": {
     "description": "Vibepollo is a self-hosted game stream host for Moonlight.",

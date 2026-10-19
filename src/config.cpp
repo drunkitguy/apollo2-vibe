@@ -977,6 +977,7 @@ namespace config {
 
     0,  // pacing_max_bitrate_kbps (0 = legacy 1 Gbps Ethernet assumption)
     0,  // packetsize (0 = off)
+    stream_qos::default_audio_qos,  // audio_qos
   };
 
   nvhttp_t nvhttp {
@@ -2075,6 +2076,13 @@ namespace config {
     int_between_f(vars, "fec_percentage", stream.fec_percentage, {1, 255});
     int_between_f(vars, "pacing_max_bitrate_kbps", stream.pacing_max_bitrate_kbps, {0, 10000000});
     int_between_f(vars, "packetsize", stream.packetsize, {0, PACKETSIZE_MAX});
+    generic_f(vars, "audio_qos", stream.audio_qos, [](const std::string_view value) {
+      if (const auto parsed = stream_qos::audio_qos_from_view(value)) {
+        return *parsed;
+      }
+      BOOST_LOG(warning) << "config: unsupported audio_qos value: " << value << ", using " << stream_qos::to_string(stream_qos::default_audio_qos);
+      return stream_qos::default_audio_qos;
+    });
     int_between_f(vars, "video_max_batch_size_kb", stream.video_max_batch_size_kb, {0, 64});
     if (stream.video_max_batch_size_kb == 0) {
       stream.video_max_batch_size_kb = 64;

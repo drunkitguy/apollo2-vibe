@@ -719,6 +719,16 @@ export const settingsCategories: SettingsCategory[] = [
           text('csrf_allowed_origins', { stacked: true }),
         ],
       },
+      {
+        id: 'network_traffic',
+        fields: [
+          select('audio_qos', [
+            option('video', 'config.audio_qos_video'),
+            option('voice', 'config.audio_qos_voice'),
+            option('off', 'config.audio_qos_off'),
+          ]),
+        ],
+      },
     ],
   },
   {
@@ -873,6 +883,7 @@ export const settingsDefaults: Record<string, unknown> = {
   lan_encryption_mode: 0,
   wan_encryption_mode: 1,
   csrf_allowed_origins: '',
+  audio_qos: 'video',
   system_tray: true,
   notify_pre_releases: false,
   min_log_level: 2,
