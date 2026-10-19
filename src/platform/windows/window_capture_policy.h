@@ -330,6 +330,7 @@ namespace platf::dxgi::window_policy {
     bool root = false;  ///< GetAncestor(GA_ROOT) is the window itself.
     bool shadow = false;  ///< SysShadow, the system drop-shadow helper window.
     bool transparent = false;  ///< Layered with zero alpha.
+    bool click_through = false;  ///< Layered and WS_EX_TRANSPARENT: an input-transparent overlay, never app UI.
     rect_i bounds {0, 0, 0, 0};  ///< DWMWA_EXTENDED_FRAME_BOUNDS.
   };
 
@@ -368,7 +369,8 @@ namespace platf::dxgi::window_policy {
     if (w.id == 0 || w.id == target || w.pid == 0) {
       return false;
     }
-    if (!w.visible || w.cloaked || w.iconic || !w.root || w.shadow || w.transparent) {
+    // Layers are copied opaque, so a see-through overlay would cover the app with black.
+    if (!w.visible || w.cloaked || w.iconic || !w.root || w.shadow || w.transparent || w.click_through) {
       return false;
     }
     if (!std::binary_search(app_pids.begin(), app_pids.end(), w.pid)) {
@@ -378,6 +380,15 @@ namespace platf::dxgi::window_policy {
       return false;
     }
     return rects_intersect(w.bounds, output);
+  }
+
+  /**
+   * @brief True when `inner` lies entirely inside `outer`. A window below the target that lies
+   * inside the target's client area is fully hidden by it and needs no layer.
+   */
+  constexpr bool rect_contains(const rect_i outer, const rect_i inner) noexcept {
+    return inner.left >= outer.left && inner.top >= outer.top && inner.right <= outer.right &&
+           inner.bottom <= outer.bottom && outer.right > outer.left && outer.bottom > outer.top;
   }
 
   /**

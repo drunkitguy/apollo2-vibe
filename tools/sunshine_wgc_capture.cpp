@@ -3103,11 +3103,12 @@ private:
     window.iconic = IsIconic(hwnd) != FALSE;
     window.root = GetAncestor(hwnd, GA_ROOT) == hwnd;
     window.shadow = window_class_is(hwnd, L"SysShadow");
-    if ((GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_LAYERED) != 0) {
+    if (const auto ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE); (ex_style & WS_EX_LAYERED) != 0) {
       BYTE alpha = 255;
       DWORD layered_flags = 0;
       window.transparent = GetLayeredWindowAttributes(hwnd, nullptr, &alpha, &layered_flags) &&
                            (layered_flags & LWA_ALPHA) != 0 && alpha == 0;
+      window.click_through = (ex_style & WS_EX_TRANSPARENT) != 0;
     }
     RECT bounds {};
     if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &bounds, sizeof(bounds))) ||
@@ -3310,6 +3311,16 @@ private:
       session.visible = false;
     }
 
+    // A window below the target that lies inside the target's client area is fully hidden by
+    // it; it gets no layer, so a game with a window behind it keeps the single-window path.
+    platf::dxgi::window_policy::rect_i target_client {0, 0, 0, 0};
+    if (RECT client {}; IsWindowVisible(_target) && !IsIconic(_target) && GetClientRect(_target, &client)) {
+      POINT origin {0, 0};
+      if (ClientToScreen(_target, &origin)) {
+        target_client = {origin.x, origin.y, origin.x + client.right, origin.y + client.bottom};
+      }
+    }
+
     std::vector<PublishedLayer> published;
     bool bounds_changed = false;
     int64_t reuse_deadline = 0;
@@ -3322,7 +3333,8 @@ private:
       const auto window = std::find_if(context.windows.begin(), context.windows.end(), [&](const auto &w) {
         return w.id == planned_layer.id;
       });
-      if (window == context.windows.end()) {
+      if (window == context.windows.end() ||
+          (planned_layer.below_target && platf::dxgi::window_policy::rect_contains(target_client, window->bounds))) {
         continue;
       }
 

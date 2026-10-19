@@ -19,6 +19,7 @@ namespace {
   using platf::dxgi::window_policy::plan_layers;
   using platf::dxgi::window_policy::plan_placement;
   using platf::dxgi::window_policy::plan_secondary_move;
+  using platf::dxgi::window_policy::rect_contains;
   using platf::dxgi::window_policy::rect_i;
   using platf::dxgi::window_policy::selection_mode_e;
   using platf::dxgi::window_policy::selection_mode_for;
@@ -623,14 +624,16 @@ TEST(WindowCapturePolicy, HiddenCloakedIconicChildShadowAndTransparentWindowsAre
   auto transparent = app_window(15, 100, bounds);
   transparent.transparent = true;
   auto empty = app_window(16, 100, {200, 30, 200, 400});
+  auto overlay = app_window(18, 100, main_bounds);
+  overlay.click_through = true;
   const auto shown = app_window(17, 200, bounds);
 
-  for (const auto &w : {hidden, cloaked, iconic, child, shadow, transparent, empty}) {
+  for (const auto &w : {hidden, cloaked, iconic, child, shadow, transparent, empty, overlay}) {
     EXPECT_FALSE(is_secondary_window(w, target_id, app_pids, primary_output)) << w.id;
   }
   EXPECT_TRUE(is_secondary_window(shown, target_id, app_pids, primary_output));
 
-  const std::vector windows {hidden, cloaked, iconic, child, shadow, transparent, empty, shown, app_window(target_id, 100, main_bounds)};
+  const std::vector windows {overlay, hidden, cloaked, iconic, child, shadow, transparent, empty, shown, app_window(target_id, 100, main_bounds)};
   const auto layers = plan(windows, target_id, app_pids);
   ASSERT_EQ(layers.size(), 2u);
   EXPECT_EQ(layers[1].id, 17u);
@@ -780,4 +783,15 @@ TEST(WindowCapturePolicy, LayerIsDrawnOnlyWithContentNewerThanItsShowOrAfterTheR
   // A reused window with an older frame waits for the reuse delay.
   EXPECT_FALSE(layer_content_ready(50, 100, 150, 100));
   EXPECT_TRUE(layer_content_ready(50, 100, 200, 100));
+}
+
+TEST(WindowCapturePolicy, WindowInsideTheTargetClientAreaIsContained) {
+  constexpr rect_i client {0, 0, 1920, 1080};
+
+  EXPECT_TRUE(rect_contains(client, {100, 100, 600, 600}));
+  EXPECT_TRUE(rect_contains(client, client));
+  EXPECT_FALSE(rect_contains(client, {1800, 100, 2000, 600}));
+  EXPECT_FALSE(rect_contains(client, {-1, 0, 100, 100}));
+  // An empty target area contains nothing.
+  EXPECT_FALSE(rect_contains({0, 0, 0, 0}, {0, 0, 0, 0}));
 }
