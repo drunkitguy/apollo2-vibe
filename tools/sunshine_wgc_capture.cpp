@@ -155,6 +155,7 @@ struct window_set_state_t {
   std::mutex mutex;
   uint64_t target_hwnd = 0;  ///< Target the set belongs to.
   std::vector<uint32_t> pids;  ///< Sorted ascending.
+  uint64_t generation = 0;  ///< Bumped with every update, under `mutex`.
 };
 
 window_set_state_t &window_set_state() {
@@ -168,16 +169,30 @@ window_set_state_t &window_set_state() {
 static std::atomic<uint64_t> g_window_set_generation {0};
 
 /**
- * @brief Processes whose windows may be drawn for `target_hwnd`; empty when the latest set
- * belongs to another target or none arrived yet.
+ * @brief Refresh `pids` with the processes for `target_hwnd` only when the set changed since
+ * `generation`; reuses the vector's storage, so the per-frame path does not allocate.
  */
-std::vector<uint32_t> window_set_pids_for(const uint64_t target_hwnd) {
+void refresh_window_set_pids(const uint64_t target_hwnd, std::vector<uint32_t> &pids, uint64_t &generation) {
   auto &state = window_set_state();
   std::lock_guard lock(state.mutex);
-  if (state.target_hwnd != target_hwnd) {
-    return {};
+  if (state.generation == generation) {
+    return;
   }
-  return state.pids;
+  if (state.target_hwnd == target_hwnd) {
+    pids.assign(state.pids.begin(), state.pids.end());
+  } else {
+    pids.clear();
+  }
+  generation = state.generation;
+}
+
+/**
+ * @brief Auto-reset event that wakes the helper's main loop for the layer manager (a new
+ * window set, a closed layer item). Created on first use and never closed.
+ */
+HANDLE layer_wake_event() {
+  static const HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  return event;
 }
 
 /**
@@ -1200,7 +1215,7 @@ constexpr auto SECONDARY_REUSE_DELAY = std::chrono::milliseconds(100);
 struct SecondaryLayer {
   HWND hwnd = nullptr;
   DWORD window_pid = 0;  ///< Process that owns the HWND, read when the layer was created.
-  DWORD content_pid = 0;  ///< App process the window shows (differs only for UWP frame windows).
+  DWORD content_pid = 0;  ///< App process of the window; equals `window_pid`, UWP frame windows are never layers.
   int64_t created_qpc = 0;
   std::atomic<int64_t> shown_qpc {0};  ///< Latest show of the window.
   std::atomic<int64_t> frame_qpc {0};  ///< Arrival of the cached frame; 0 before the first one.
@@ -1320,20 +1335,44 @@ private:
   std::mutex _layers_mutex;
   std::vector<PublishedLayer> _published_layers;  ///< Bottom-up; guarded by `_layers_mutex`.
   std::atomic<bool> _layers_published {false};  ///< `_published_layers` is not empty.
+  std::atomic<uint64_t> _layers_generation {1};  ///< Bumped with every publication, under `_layers_mutex`.
   std::atomic<bool> _recomposite_pending {false};  ///< A layer changed without a new target frame.
   std::atomic<bool> _last_frame_had_layers {false};  ///< The latest queued frame drew secondary layers.
   std::atomic<int> _layer_callbacks {0};  ///< Layer FrameArrived handlers in flight.
+  // Recomposites run on their own thread, so neither the main thread nor a FrameArrived
+  // handler ever waits for the context lock behind the shared keyed mutex for them.
+  std::mutex _recomposite_mutex;
+  std::condition_variable _recomposite_cv;
+  bool _recomposite_stop = false;  ///< Guarded by `_recomposite_mutex`.
+  std::thread _recomposite_thread;
   // Guarded by `_d3d_context_mutex`.
   scratch_texture_t _base;  ///< The target alone on black, as the window-only path composites it.
   bool _base_valid = false;
   std::optional<size_t> _last_target_only_scratch;  ///< Scratch holding the latest frame composited without layers.
   platf::dxgi::window_policy::window_blit_t _last_target_blit {true, false, 0, 0, 0, 0, 0, 0};
+  uint64_t _last_layered_qpc = 0;  ///< Latest frame time queued in layer mode; queued times never go back.
 
   struct layer_draw_t {
     std::shared_ptr<SecondaryLayer> layer;
     platf::dxgi::window_policy::rect_i bounds;
     bool below_target;
   };
+
+  /**
+   * @brief Per-caller buffers for collect_drawable_layers(), reused so that compositing a
+   * frame does not allocate once they reached their size.
+   */
+  struct collect_buffers_t {
+    std::vector<PublishedLayer> layers;
+    uint64_t layers_generation = 0;  ///< Publication `layers` was copied from; 0 for none.
+    std::vector<uint32_t> pids;
+    uint64_t pids_generation = UINT64_MAX;  ///< Window set `pids` was copied from.
+    std::vector<layer_draw_t> draws;
+  };
+
+  std::mutex _target_collect_mutex;  ///< Target FrameArrived handlers can overlap.
+  collect_buffers_t _target_collect;  ///< Guarded by `_target_collect_mutex`.
+  collect_buffers_t _recomposite_collect;  ///< Recomposite thread only.
 
 public:
   /**
@@ -1416,10 +1455,22 @@ public:
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
+    stop_recomposite_thread();
     stop_delivery_thread();
   }
 
 private:
+  void stop_recomposite_thread() noexcept {
+    {
+      std::lock_guard lock(_recomposite_mutex);
+      _recomposite_stop = true;
+    }
+    _recomposite_cv.notify_all();
+    if (_recomposite_thread.joinable()) {
+      _recomposite_thread.join();
+    }
+  }
+
   void stop_delivery_thread() noexcept {
     {
       std::lock_guard lock(_delivery_mutex);
@@ -1722,29 +1773,29 @@ private:
    * hidden window or a reused HWND of another process is never drawn, even before the layer
    * manager handles its event.
    */
-  std::vector<layer_draw_t> collect_drawable_layers() {
-    std::vector<layer_draw_t> draws;
+  void collect_drawable_layers(collect_buffers_t &buffers) {
+    buffers.draws.clear();
     if (!_layer_mode || !_layers_published.load(std::memory_order_acquire)) {
-      return draws;
+      return;
     }
 
-    std::vector<PublishedLayer> layers;
-    {
+    if (buffers.layers_generation != _layers_generation.load(std::memory_order_acquire)) {
       std::lock_guard lock(_layers_mutex);
-      layers = _published_layers;
+      buffers.layers.assign(_published_layers.begin(), _published_layers.end());
+      buffers.layers_generation = _layers_generation.load(std::memory_order_relaxed);
     }
-    if (layers.empty()) {
-      return draws;
+    if (buffers.layers.empty()) {
+      return;
     }
 
-    const auto app_pids = window_set_pids_for(reinterpret_cast<std::uintptr_t>(_target_hwnd));
-    if (app_pids.empty()) {
-      return draws;
+    refresh_window_set_pids(reinterpret_cast<std::uintptr_t>(_target_hwnd), buffers.pids, buffers.pids_generation);
+    if (buffers.pids.empty()) {
+      return;
     }
 
     const auto now = qpc_now();
     const auto reuse_delay = qpc_ticks(SECONDARY_REUSE_DELAY);
-    for (const auto &published : layers) {
+    for (const auto &published : buffers.layers) {
       const auto &layer = *published.layer;
       if (layer.closed.load(std::memory_order_acquire) ||
           !platf::dxgi::window_policy::layer_content_ready(
@@ -1762,7 +1813,7 @@ private:
       }
       DWORD window_pid = 0;
       GetWindowThreadProcessId(hwnd, &window_pid);
-      if (window_pid != layer.window_pid || !std::binary_search(app_pids.begin(), app_pids.end(), static_cast<uint32_t>(layer.content_pid))) {
+      if (window_pid != layer.window_pid || !std::binary_search(buffers.pids.begin(), buffers.pids.end(), static_cast<uint32_t>(window_pid))) {
         continue;
       }
       DWORD cloaked = 0;
@@ -1774,13 +1825,72 @@ private:
         continue;
       }
 
-      draws.push_back(layer_draw_t {
+      buffers.draws.push_back(layer_draw_t {
         .layer = published.layer,
         .bounds = {bounds.left, bounds.top, bounds.right, bounds.bottom},
         .below_target = published.below_target,
       });
     }
-    return draws;
+  }
+
+  /**
+   * @brief Frame time for a frame queued in layer mode; never earlier than the previous one,
+   * since recomposites use the current time. Call with the context lock held.
+   */
+  uint64_t layered_frame_qpc(const uint64_t frame_qpc) {
+    _last_layered_qpc = std::max(_last_layered_qpc, frame_qpc);
+    return _last_layered_qpc;
+  }
+
+  /**
+   * @brief Composite and queue a target frame in layer mode.
+   *
+   * Composited and queued under the context lock, like recomposites, so frames are queued in
+   * the order they were composited. When the published layers changed after they were read
+   * for this frame (a menu closed meanwhile), a recomposite follows so the change is never
+   * lost behind this frame.
+   */
+  void queue_layered_target_frame(
+    Direct3D11CaptureFrame frame,
+    const winrt::com_ptr<ID3D11Texture2D> &frame_tex,
+    const size_t scratch_index,
+    const platf::dxgi::window_policy::window_blit_t &window_blit,
+    const uint64_t frame_qpc
+  ) {
+    std::lock_guard collect_lock(_target_collect_mutex);
+    // This frame is composited from the current layers, so an earlier recomposite request
+    // is covered; a layer change after this point requests a new one.
+    _recomposite_pending.store(false, std::memory_order_release);
+    collect_drawable_layers(_target_collect);
+    const auto &layers = _target_collect.draws;
+
+    bool queued = false;
+    {
+      std::lock_guard context_lock(_d3d_context_mutex);
+      auto &scratch = _scratch_textures[scratch_index];
+      bool copied = false;
+      if (!layers.empty() && composite_target_with_layers(scratch, frame_tex, window_blit, layers)) {
+        copied = true;
+      } else {
+        copied = composite_window_frame(scratch, frame_tex, window_blit);
+        if (copied) {
+          note_target_only_frame(scratch_index, window_blit);
+        }
+      }
+      frame = nullptr;
+
+      if (_target_collect.layers_generation != _layers_generation.load(std::memory_order_acquire)) {
+        request_recomposite();
+      }
+      if (copied) {
+        queued = enqueue_scratch_texture(scratch_index, layered_frame_qpc(frame_qpc));
+      } else {
+        release_reserved_scratch_texture(scratch_index);
+      }
+    }
+    if (queued) {
+      _delivery_cv.notify_one();
+    }
   }
 
   /**
@@ -2003,6 +2113,83 @@ private:
     } catch (const winrt::hresult_error &ex) {
       BOOST_LOG(debug) << "Failed to grow a secondary window frame pool: " << ex.code();
     }
+  }
+
+  void recomposite_thread_proc() noexcept {
+    std::unique_lock lock(_recomposite_mutex);
+    while (!_recomposite_stop) {
+      _recomposite_cv.wait(lock, [this]() {
+        return _recomposite_stop || _recomposite_pending.load(std::memory_order_acquire);
+      });
+      if (_recomposite_stop) {
+        break;
+      }
+
+      lock.unlock();
+      bool done = true;
+      try {
+        done = try_recomposite();
+      } catch (...) {
+        BOOST_LOG(error) << "Unexpected error while recompositing secondary windows";
+      }
+      lock.lock();
+      if (!done && !_recomposite_stop) {
+        // No scratch texture was free; the delivery thread frees one within a frame.
+        _recomposite_cv.wait_for(lock, std::chrono::milliseconds(2), [this]() {
+          return _recomposite_stop;
+        });
+      }
+    }
+  }
+
+  /**
+   * @brief Publish a frame for a secondary window change that came without a target frame:
+   * a layer delivered new content, showed, moved or went away. Recomposite thread only.
+   * @return false when no scratch texture was free; the request then stays pending.
+   */
+  bool try_recomposite() {
+    if (!_layer_mode || _shutting_down.load(std::memory_order_acquire) ||
+        !_recomposite_pending.exchange(false, std::memory_order_acq_rel)) {
+      return true;
+    }
+
+    collect_drawable_layers(_recomposite_collect);
+    const auto &layers = _recomposite_collect.draws;
+    if (layers.empty() && !_last_frame_had_layers.load(std::memory_order_acquire)) {
+      // The latest frame already shows the target alone.
+      return true;
+    }
+
+    auto scratch_index = reserve_scratch_texture();
+    if (!scratch_index) {
+      _recomposite_pending.store(true, std::memory_order_release);
+      return false;
+    }
+    if (!ensure_scratch_texture(*scratch_index)) {
+      release_reserved_scratch_texture(*scratch_index);
+      return true;
+    }
+
+    bool queued = false;
+    {
+      // Composed and queued under the context lock, like layer-mode target frames, so frames
+      // are queued in the order they were composited.
+      std::lock_guard context_lock(_d3d_context_mutex);
+      if (ensure_base()) {
+        compose_layers(_scratch_textures[*scratch_index], layers);
+        _last_frame_had_layers.store(!layers.empty(), std::memory_order_release);
+        queued = enqueue_scratch_texture(*scratch_index, layered_frame_qpc(static_cast<uint64_t>(qpc_now())));
+      } else {
+        release_reserved_scratch_texture(*scratch_index);
+      }
+      if (_recomposite_collect.layers_generation != _layers_generation.load(std::memory_order_acquire)) {
+        _recomposite_pending.store(true, std::memory_order_release);
+      }
+    }
+    if (queued) {
+      _delivery_cv.notify_one();
+    }
+    return true;
   }
 
   bool drain_to_latest() const {
@@ -2381,27 +2568,20 @@ private:
 
     // The window queries are syscalls into the window manager; keep them out of the context lock.
     platf::dxgi::window_policy::window_blit_t window_blit {};
-    std::vector<layer_draw_t> layers;
     if (_window_mode) {
       window_blit = query_window_blit(frame_tex, content_size);
-      if (_layer_mode) {
-        // This frame is composited from the current layers, so an earlier recomposite request
-        // is covered. Any layer change after this point requests a new one.
-        _recomposite_pending.store(false, std::memory_order_release);
-        layers = collect_drawable_layers();
-      }
+    }
+
+    if (_layer_mode) {
+      queue_layered_target_frame(std::move(frame), frame_tex, *scratch_index, window_blit, frame_qpc);
+      return;
     }
 
     bool copied = true;
     {
       std::lock_guard context_lock(_d3d_context_mutex);
-      if (_window_mode && !layers.empty() && composite_target_with_layers(_scratch_textures[*scratch_index], frame_tex, window_blit, layers)) {
-        copied = true;
-      } else if (_window_mode) {
+      if (_window_mode) {
         copied = composite_window_frame(_scratch_textures[*scratch_index], frame_tex, window_blit);
-        if (_layer_mode) {
-          note_target_only_frame(*scratch_index, window_blit);
-        }
       } else {
         _deps->d3d_context->CopyResource(_scratch_textures[*scratch_index].texture.get(), frame_tex.get());
       }
@@ -2414,7 +2594,6 @@ private:
 
     if (!copied) {
       release_reserved_scratch_texture(*scratch_index);
-      request_recomposite();
       return;
     }
 
@@ -2654,6 +2833,11 @@ public:
    */
   void enable_secondary_layers() {
     _layer_mode = _window_mode;
+    if (_layer_mode && !_recomposite_thread.joinable()) {
+      _recomposite_thread = std::thread([this]() {
+        recomposite_thread_proc();
+      });
+    }
   }
 
   /**
@@ -2687,62 +2871,24 @@ public:
       std::lock_guard lock(_layers_mutex);
       _published_layers = std::move(layers);
       _layers_published.store(!_published_layers.empty(), std::memory_order_release);
+      _layers_generation.fetch_add(1, std::memory_order_acq_rel);
     }
     request_recomposite();
   }
 
   /**
-   * @brief Ask for a new frame from the cached target and layers; done by try_recomposite().
+   * @brief Ask the recomposite thread for a new frame from the cached target and layers.
+   * Never blocks on the D3D context.
    */
   void request_recomposite() {
-    if (_layer_mode) {
-      _recomposite_pending.store(true, std::memory_order_release);
-    }
-  }
-
-  /**
-   * @brief Publish a frame for a secondary window change that came without a target frame:
-   * a layer delivered new content, showed, moved or went away. Runs on the main thread.
-   * When no scratch texture is free the request stays pending for the next call.
-   */
-  void try_recomposite() {
-    if (!_layer_mode || _shutting_down.load(std::memory_order_acquire) ||
-        !_recomposite_pending.exchange(false, std::memory_order_acq_rel)) {
+    if (!_layer_mode) {
       return;
     }
-
-    auto layers = collect_drawable_layers();
-    if (layers.empty() && !_last_frame_had_layers.load(std::memory_order_acquire)) {
-      // The latest frame already shows the target alone.
-      return;
-    }
-
-    auto scratch_index = reserve_scratch_texture();
-    if (!scratch_index) {
-      _recomposite_pending.store(true, std::memory_order_release);
-      return;
-    }
-    if (!ensure_scratch_texture(*scratch_index)) {
-      release_reserved_scratch_texture(*scratch_index);
-      return;
-    }
-
-    bool queued = false;
     {
-      // Composed and queued under the context lock, so a recomposite built on an older
-      // target frame can never be queued after a newer target frame.
-      std::lock_guard context_lock(_d3d_context_mutex);
-      if (ensure_base()) {
-        compose_layers(_scratch_textures[*scratch_index], layers);
-        _last_frame_had_layers.store(!layers.empty(), std::memory_order_release);
-        queued = enqueue_scratch_texture(*scratch_index, static_cast<uint64_t>(qpc_now()));
-      }
+      std::lock_guard lock(_recomposite_mutex);
+      _recomposite_pending.store(true, std::memory_order_release);
     }
-    if (!queued) {
-      release_reserved_scratch_texture(*scratch_index);
-      return;
-    }
-    _delivery_cv.notify_one();
+    _recomposite_cv.notify_one();
   }
 
   /**
@@ -2979,6 +3125,7 @@ public:
       UnhookWinEvent(hook);
     }
     _hooks.clear();
+    set_location_hook(false);
     for (auto &session : _sessions) {
       close_session(session);
     }
@@ -2993,7 +3140,6 @@ public:
    * @brief Install the window event hooks and scan once.
    */
   void start() {
-    constexpr DWORD flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
     // Events of all processes: membership is decided per window in update().
     const std::array<std::pair<DWORD, DWORD>, 4> ranges {{
       {EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MENUPOPUPEND},  // foreground, menu popups start and end
@@ -3002,12 +3148,9 @@ public:
       {EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED},
     }};
     for (const auto &[first, last] : ranges) {
-      add_hook(first, last, 0, flags);
-    }
-    // Location changes also fire for every cursor and caret move, so they are taken from
-    // the target's process only; moves in other app processes are found by the periodic scan.
-    if (_target_window_pid != 0) {
-      add_hook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, _target_window_pid, flags);
+      if (HWINEVENTHOOK hook = add_hook(first, last, 0)) {
+        _hooks.push_back(hook);
+      }
     }
     BOOST_LOG(info) << "Window-only secondary windows enabled (" << _hooks.size() << " event hooks)";
 
@@ -3016,16 +3159,18 @@ public:
   }
 
   /**
-   * @brief Scan when events arrived, the window set changed or the safety interval passed,
-   * then publish any pending recomposite. Called on every main loop iteration.
+   * @brief Scan when events arrived, the window set changed or the safety interval passed.
+   * Called on every main loop iteration; compositing happens on the capture manager's threads.
+   * @return How long the main loop may wait for messages or the wake event before the next
+   * call is due, in milliseconds. Capped at 16 ms, the default timer resolution, so the
+   * loop's other checks run as often as with the plain loop.
    */
-  void tick() {
+  DWORD tick() {
     const auto now = qpc_now();
     const auto generation = g_window_set_generation.load(std::memory_order_acquire);
-    const auto since_scan = now - _last_scan_qpc;
     const bool dirty = layer_events().dirty.load(std::memory_order_acquire);
-    if (generation != _generation || since_scan >= qpc_ticks(SCAN_INTERVAL) ||
-        (dirty && since_scan >= qpc_ticks(MIN_EVENT_SCAN_INTERVAL))) {
+    if (generation != _generation || now - _last_scan_qpc >= qpc_ticks(SCAN_INTERVAL) ||
+        (dirty && now - _last_scan_qpc >= qpc_ticks(MIN_EVENT_SCAN_INTERVAL))) {
       _generation = generation;
       update(now);
     }
@@ -3034,7 +3179,16 @@ public:
       _reuse_deadline_qpc = 0;
       _capture.request_recomposite();
     }
-    _capture.try_recomposite();
+
+    auto next = _last_scan_qpc + qpc_ticks(SCAN_INTERVAL);
+    if (layer_events().dirty.load(std::memory_order_acquire)) {
+      next = std::min(next, _last_scan_qpc + qpc_ticks(MIN_EVENT_SCAN_INTERVAL));
+    }
+    if (_reuse_deadline_qpc != 0) {
+      next = std::min(next, _reuse_deadline_qpc);
+    }
+    const auto wait_ms = std::clamp<int64_t>((next - qpc_now()) * 1000 / qpc_frequency(), 0, 16);
+    return static_cast<DWORD>(wait_ms);
   }
 
 private:
@@ -3052,8 +3206,11 @@ private:
 
   struct enum_context_t {
     HWND target;
+    HWND foreground;
+    platf::dxgi::window_policy::rect_i target_client;
     const std::vector<uint32_t> &pids;
-    std::vector<platf::dxgi::window_policy::app_window_t> windows;
+    std::vector<platf::dxgi::window_policy::app_window_t> &windows;
+    std::unordered_set<std::uintptr_t> &logged_see_through;
   };
 
   static bool window_class_is(HWND hwnd, const wchar_t *expected) {
@@ -3061,34 +3218,16 @@ private:
     return GetClassNameW(hwnd, class_name, static_cast<int>(std::size(class_name))) > 0 && wcscmp(class_name, expected) == 0;
   }
 
-  /**
-   * @brief Process of the app content a UWP frame window hosts, or 0.
-   */
-  static DWORD hosted_content_pid(HWND frame, const DWORD frame_pid) {
-    for (HWND child = FindWindowExW(frame, nullptr, L"Windows.UI.Core.CoreWindow", nullptr); child != nullptr;
-         child = FindWindowExW(frame, child, L"Windows.UI.Core.CoreWindow", nullptr)) {
-      DWORD pid = 0;
-      if (GetWindowThreadProcessId(child, &pid) && pid != 0 && pid != frame_pid) {
-        return pid;
-      }
-    }
-    return 0;
-  }
-
   static BOOL CALLBACK enum_app_window(HWND hwnd, LPARAM param) {
     auto &context = *reinterpret_cast<enum_context_t *>(param);
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
     const bool is_target = hwnd == context.target;
-    // The process check comes first; other windows are never queried further.
+    // The process check comes first; other windows are never queried further. Windows are
+    // matched by the process that owns the HWND only: UWP frame windows belong to the frame
+    // host, which is never in the set, so they never become layers.
     if (!is_target && !std::binary_search(context.pids.begin(), context.pids.end(), static_cast<uint32_t>(pid))) {
-      if (!window_class_is(hwnd, L"ApplicationFrameWindow")) {
-        return TRUE;
-      }
-      pid = hosted_content_pid(hwnd, pid);
-      if (!std::binary_search(context.pids.begin(), context.pids.end(), static_cast<uint32_t>(pid))) {
-        return TRUE;
-      }
+      return TRUE;
     }
 
     platf::dxgi::window_policy::app_window_t window;
@@ -3103,29 +3242,58 @@ private:
     window.iconic = IsIconic(hwnd) != FALSE;
     window.root = GetAncestor(hwnd, GA_ROOT) == hwnd;
     window.shadow = window_class_is(hwnd, L"SysShadow");
-    if (const auto ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE); (ex_style & WS_EX_LAYERED) != 0) {
-      BYTE alpha = 255;
-      DWORD layered_flags = 0;
-      window.transparent = GetLayeredWindowAttributes(hwnd, nullptr, &alpha, &layered_flags) &&
-                           (layered_flags & LWA_ALPHA) != 0 && alpha == 0;
-      window.click_through = (ex_style & WS_EX_TRANSPARENT) != 0;
-    }
     RECT bounds {};
     if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &bounds, sizeof(bounds))) ||
         GetWindowRect(hwnd, &bounds)) {
       window.bounds = {bounds.left, bounds.top, bounds.right, bounds.bottom};
     }
+    if (const auto ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE); (ex_style & WS_EX_LAYERED) != 0) {
+      BYTE alpha = 255;
+      DWORD layered_flags = 0;
+      // Fails for windows drawn with UpdateLayeredWindow, which have per-pixel alpha.
+      const bool has_attributes = GetLayeredWindowAttributes(hwnd, nullptr, &alpha, &layered_flags) != FALSE;
+      window.transparent = has_attributes && (layered_flags & LWA_ALPHA) != 0 && alpha == 0;
+      window.click_through = (ex_style & WS_EX_TRANSPARENT) != 0;
+      if (!is_target) {
+        const auto style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        window.see_through_cover = platf::dxgi::window_policy::large_see_through_window(
+          !has_attributes,
+          (style & WS_CAPTION) == WS_CAPTION,
+          GetWindow(hwnd, GW_OWNER) != nullptr,
+          hwnd == context.foreground,
+          window.bounds,
+          context.target_client
+        );
+        if (window.see_through_cover && window.visible && context.logged_see_through.insert(window.id).second) {
+          BOOST_LOG(info) << "Window-only: not drawing a large see-through window 0x" << std::hex << window.id << std::dec
+                          << ' ' << describe(hwnd, pid);
+        }
+      }
+    }
     context.windows.push_back(window);
     return TRUE;
   }
 
-  void add_hook(const DWORD first, const DWORD last, const DWORD pid, const DWORD flags) {
-    HWINEVENTHOOK hook = SetWinEventHook(first, last, nullptr, layer_event_proc, pid, 0, flags);
+  static HWINEVENTHOOK add_hook(const DWORD first, const DWORD last, const DWORD pid) {
+    HWINEVENTHOOK hook = SetWinEventHook(first, last, nullptr, layer_event_proc, pid, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
     if (!hook) {
       BOOST_LOG(warning) << "Failed to install a window event hook (0x" << std::hex << first << std::dec << "): " << GetLastError();
-      return;
     }
-    _hooks.push_back(hook);
+    return hook;
+  }
+
+  /**
+   * @brief Location changes also fire for every cursor and caret move, so they are taken from
+   * the target's process only and only while a layer is shown (a moved target or popup must
+   * then recomposite). Moves in other app processes are found by the periodic scan.
+   */
+  void set_location_hook(const bool enabled) {
+    if (enabled && !_location_hook && _target_window_pid != 0) {
+      _location_hook = add_hook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, _target_window_pid);
+    } else if (!enabled && _location_hook) {
+      UnhookWinEvent(_location_hook);
+      _location_hook = nullptr;
+    }
   }
 
   session_t *find_session(HWND hwnd) {
@@ -3169,7 +3337,7 @@ private:
     session.layer = std::make_shared<SecondaryLayer>();
     auto &layer = *session.layer;
     layer.hwnd = hwnd;
-    layer.content_pid = content_pid;
+    layer.content_pid = content_pid;  // the window's own process: UWP frame windows are never layers
     layer.created_qpc = now;
     GetWindowThreadProcessId(hwnd, &layer.window_pid);
 
@@ -3196,6 +3364,7 @@ private:
       session.closed_token = session.item.Closed([shared_layer](GraphicsCaptureItem const &, winrt::Windows::Foundation::IInspectable const &) {
         shared_layer->closed.store(true, std::memory_order_release);
         mark_layers_dirty();
+        SetEvent(layer_wake_event());
       });
 
       session.session = session.pool.CreateCaptureSession(session.item);
@@ -3275,21 +3444,33 @@ private:
     const auto destroyed_count = std::min(events.destroyed_count, events.destroyed.size());
     events.destroyed_count = 0;
     if (destroyed_count > 0) {
+      const auto destroyed_end = events.destroyed.begin() + static_cast<std::ptrdiff_t>(destroyed_count);
       drop_sessions_if([&](const session_t &session) {
-        return std::find(events.destroyed.begin(), events.destroyed.begin() + static_cast<std::ptrdiff_t>(destroyed_count), session.layer->hwnd) !=
-               events.destroyed.begin() + static_cast<std::ptrdiff_t>(destroyed_count);
+        return std::find(events.destroyed.begin(), destroyed_end, session.layer->hwnd) != destroyed_end;
       });
     }
 
-    const auto pids = window_set_pids_for(reinterpret_cast<std::uintptr_t>(_target));
-    enum_context_t context {_target, pids, {}};
+    refresh_window_set_pids(reinterpret_cast<std::uintptr_t>(_target), _pids, _pids_generation);
+    const auto &pids = _pids;
+
+    // The target's client area on the desktop; empty while it is hidden or minimized.
+    platf::dxgi::window_policy::rect_i target_client {0, 0, 0, 0};
+    if (RECT client {}; IsWindowVisible(_target) && !IsIconic(_target) && GetClientRect(_target, &client)) {
+      POINT origin {0, 0};
+      if (ClientToScreen(_target, &origin)) {
+        target_client = {origin.x, origin.y, origin.x + client.right, origin.y + client.bottom};
+      }
+    }
+
+    _windows.clear();
     if (!pids.empty()) {
+      enum_context_t context {_target, GetForegroundWindow(), target_client, pids, _windows, _logged_see_through};
       EnumWindows(enum_app_window, reinterpret_cast<LPARAM>(&context));
     }
 
     std::array<platf::dxgi::window_policy::layer_t, platf::dxgi::window_policy::max_secondary_layers + 1> planned {};
     const auto count = platf::dxgi::window_policy::plan_layers(
-      context.windows,
+      _windows,
       reinterpret_cast<std::uintptr_t>(_target),
       pids,
       _output,
@@ -3297,7 +3478,7 @@ private:
     );
 
     if (!_cap_warned) {
-      const auto qualifying = std::count_if(context.windows.begin(), context.windows.end(), [&](const auto &window) {
+      const auto qualifying = std::count_if(_windows.begin(), _windows.end(), [&](const auto &window) {
         return platf::dxgi::window_policy::is_secondary_window(window, reinterpret_cast<std::uintptr_t>(_target), pids, _output);
       });
       if (static_cast<size_t>(qualifying) > platf::dxgi::window_policy::max_secondary_layers) {
@@ -3307,60 +3488,80 @@ private:
       }
     }
 
+    // Pass 1: the planned windows, bottom-up, and the sessions they already have. Those
+    // sessions are marked visible first, so making room for new sessions in pass 2 never
+    // evicts a window shown in this scan.
+    struct entry_t {
+      HWND hwnd;
+      const platf::dxgi::window_policy::app_window_t *window;
+      bool below_target;
+      session_t *session;
+    };
+    std::array<entry_t, platf::dxgi::window_policy::max_secondary_layers + 1> entries {};
+    size_t entry_count = 0;
     for (auto &session : _sessions) {
       session.visible = false;
     }
-
-    // A window below the target whose part on the display lies under the target's client
-    // area is fully hidden by it; it gets no layer, so a game with a window behind it keeps
-    // the single-window composite.
-    platf::dxgi::window_policy::rect_i target_client {0, 0, 0, 0};
-    if (RECT client {}; IsWindowVisible(_target) && !IsIconic(_target) && GetClientRect(_target, &client)) {
-      POINT origin {0, 0};
-      if (ClientToScreen(_target, &origin)) {
-        target_client = {origin.x, origin.y, origin.x + client.right, origin.y + client.bottom};
-      }
-    }
-
-    std::vector<PublishedLayer> published;
-    bool bounds_changed = false;
-    int64_t reuse_deadline = 0;
     for (size_t i = 0; i < count; ++i) {
       const auto &planned_layer = planned[i];
       if (planned_layer.is_target) {
         continue;
       }
-      const auto hwnd = reinterpret_cast<HWND>(planned_layer.id);
-      const auto window = std::find_if(context.windows.begin(), context.windows.end(), [&](const auto &w) {
+      const auto window = std::find_if(_windows.begin(), _windows.end(), [&](const auto &w) {
         return w.id == planned_layer.id;
       });
-      if (window == context.windows.end() ||
+      // A window below the target whose part on the display lies under the target's client
+      // area is fully hidden by it; it gets no layer, so a game with a window behind it keeps
+      // the single-window composite.
+      if (window == _windows.end() ||
           (planned_layer.below_target && platf::dxgi::window_policy::hidden_below_target(_output, window->bounds, target_client))) {
         continue;
       }
-
+      const auto hwnd = reinterpret_cast<HWND>(planned_layer.id);
       auto *session = find_session(hwnd);
       if (session && session->layer->closed.load(std::memory_order_acquire)) {
-        session = nullptr;  // dropped below; a new session starts on the next scan
-      } else if (!session) {
-        if (_sessions.size() >= MAX_LAYER_SESSIONS) {
-          drop_least_recently_shown();
-        }
-        if (_sessions.size() >= MAX_LAYER_SESSIONS) {
-          continue;
-        }
-        session = create_session(hwnd, window->pid, now);
+        continue;  // dropped below; a new session starts on the next scan
       }
+      if (session) {
+        session->visible = true;
+      }
+      entries[entry_count++] = entry_t {hwnd, &*window, planned_layer.below_target, session};
+    }
+
+    // Pass 2: start sessions for newly shown windows, evicting hidden ones when at the cap.
+    for (size_t i = 0; i < entry_count; ++i) {
+      auto &entry = entries[i];
+      if (entry.session) {
+        continue;
+      }
+      if (_sessions.size() >= MAX_LAYER_SESSIONS) {
+        drop_least_recently_shown();
+      }
+      if (_sessions.size() >= MAX_LAYER_SESSIONS) {
+        continue;
+      }
+      entry.session = create_session(entry.hwnd, entry.window->pid, now);
+      if (entry.session) {
+        entry.session->visible = true;
+      }
+    }
+
+    // Pass 3: publish bottom-up.
+    std::vector<PublishedLayer> published;
+    published.reserve(entry_count);
+    bool bounds_changed = false;
+    int64_t reuse_deadline = 0;
+    for (size_t i = 0; i < entry_count; ++i) {
+      const auto &entry = entries[i];
+      auto *session = entry.session;
       if (!session) {
         continue;
       }
-
-      if (session->last_shown_qpc == 0 || !_was_visible.contains(planned_layer.id)) {
+      if (session->last_shown_qpc == 0 || !_was_visible.contains(reinterpret_cast<std::uintptr_t>(entry.hwnd))) {
         session->layer->shown_qpc.store(shown_at, std::memory_order_release);
       }
-      session->visible = true;
       session->last_shown_qpc = now;
-      const RECT bounds {window->bounds.left, window->bounds.top, window->bounds.right, window->bounds.bottom};
+      const RECT bounds {entry.window->bounds.left, entry.window->bounds.top, entry.window->bounds.right, entry.window->bounds.bottom};
       if (!EqualRect(&bounds, &session->bounds)) {
         session->bounds = bounds;
         bounds_changed = true;
@@ -3372,7 +3573,7 @@ private:
         const auto deadline = layer_shown + qpc_ticks(SECONDARY_REUSE_DELAY);
         reuse_deadline = reuse_deadline == 0 ? deadline : std::min(reuse_deadline, deadline);
       }
-      published.push_back(PublishedLayer {session->layer, planned_layer.below_target});
+      published.push_back(PublishedLayer {session->layer, entry.below_target});
     }
 
     _was_visible.clear();
@@ -3388,10 +3589,11 @@ private:
       if (session.layer->closed.load(std::memory_order_acquire) || !IsWindow(session.layer->hwnd)) {
         return true;
       }
-      return !session.visible && !std::binary_search(pids.begin(), pids.end(), static_cast<uint32_t>(session.layer->content_pid));
+      return !session.visible && !std::binary_search(pids.begin(), pids.end(), static_cast<uint32_t>(session.layer->window_pid));
     });
 
     _reuse_deadline_qpc = reuse_deadline;
+    set_location_hook(!published.empty());
 
     std::vector<std::pair<HWND, bool>> order;
     order.reserve(published.size());
@@ -3428,6 +3630,11 @@ private:
   std::list<session_t> _sessions;
   std::unordered_map<HWND, int64_t> _failed;  ///< Windows whose session could not start, and when.
   std::unordered_set<std::uintptr_t> _was_visible;  ///< Layers published by the previous scan.
+  std::unordered_set<std::uintptr_t> _logged_see_through;  ///< See-through windows already logged.
+  std::vector<platf::dxgi::window_policy::app_window_t> _windows;  ///< Scan buffer.
+  std::vector<uint32_t> _pids;  ///< App window set for the target.
+  uint64_t _pids_generation = UINT64_MAX;
+  HWINEVENTHOOK _location_hook = nullptr;
   std::vector<std::pair<HWND, bool>> _published_order;
   uint64_t _generation = 0;
   int64_t _last_scan_qpc = 0;
@@ -3545,8 +3752,12 @@ void handle_ipc_message(std::span<const uint8_t> message) {
       std::lock_guard lock(state.mutex);
       state.target_hwnd = update.target_hwnd;
       state.pids.assign(update.pids, update.pids + update.pid_count);
+      ++state.generation;
     }
     g_window_set_generation.fetch_add(1, std::memory_order_acq_rel);
+    if (HANDLE wake = layer_wake_event()) {
+      SetEvent(wake);
+    }
     BOOST_LOG(debug) << "Window set updated: " << update.pid_count << " process(es)";
     return;
   }
@@ -3941,9 +4152,10 @@ int main(int argc, char *argv[]) {
       }
 
       poll_pending_secure_desktop_transition();
-      layer_manager->tick();
+      const DWORD wait_ms = layer_manager->tick();
 
-      MsgWaitForMultipleObjects(0, nullptr, FALSE, 1, QS_ALLINPUT);
+      HANDLE wake = layer_wake_event();
+      MsgWaitForMultipleObjects(wake ? 1 : 0, wake ? &wake : nullptr, FALSE, wait_ms, QS_ALLINPUT);
     }
   } else {
     while (pipe_shared->is_connected() && !shutdown_requested && !g_capture_item_closed.load(std::memory_order_acquire)) {
