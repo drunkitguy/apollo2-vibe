@@ -19,7 +19,10 @@ namespace {
   using platf::dxgi::window_policy::plan_layers;
   using platf::dxgi::window_policy::plan_placement;
   using platf::dxgi::window_policy::plan_secondary_move;
-  using platf::dxgi::window_policy::rect_contains;
+  using platf::dxgi::window_policy::focus_state_t;
+  using platf::dxgi::window_policy::hidden_below_target;
+  using platf::dxgi::window_policy::large_see_through_window;
+  using platf::dxgi::window_policy::plan_focus;
   using platf::dxgi::window_policy::rect_i;
   using platf::dxgi::window_policy::selection_mode_e;
   using platf::dxgi::window_policy::selection_mode_for;
@@ -71,10 +74,12 @@ namespace {
     const std::uint32_t pid,
     const std::int64_t area,
     const bool is_foreground = false,
-    const bool matches_app = true
+    const bool matches_app = true,
+    const bool dialog_like = true
   ) {
     auto c = candidate(id, area, matches_app, is_foreground);
     c.pid = pid;
+    c.dialog_like = dialog_like;
     return c;
   }
 
@@ -785,13 +790,109 @@ TEST(WindowCapturePolicy, LayerIsDrawnOnlyWithContentNewerThanItsShowOrAfterTheR
   EXPECT_TRUE(layer_content_ready(50, 100, 200, 100));
 }
 
-TEST(WindowCapturePolicy, WindowInsideTheTargetClientAreaIsContained) {
+TEST(WindowCapturePolicy, UnownedResizableMainTypeWindowOfTheSameProcessStillWins) {
+  // An emulator opens its game render window next to its game list; the render window is
+  // smaller than the placed game list but is a main-type window, so it becomes the target.
+  const std::array candidates {
+    candidate_of(1, 100, 2'073'600),
+    candidate_of(2, 100, 921'600, true, true, false),
+  };
+
+  EXPECT_EQ(choose_target(candidates, 1, selection_mode_e::app_matcher), 2u);
+}
+
+TEST(WindowCapturePolicy, DesktopModeFollowsTheForegroundBetweenMainWindowsOfOneProcess) {
+  const std::array to_small {
+    candidate_of(1, 100, 2'073'600, false, false, false),
+    candidate_of(2, 100, 480'000, true, false, false),
+  };
+  EXPECT_EQ(choose_target(to_small, 1, selection_mode_e::desktop), 2u);
+
+  const std::array back {
+    candidate_of(1, 100, 2'073'600, true, false, false),
+    candidate_of(2, 100, 480'000, false, false, false),
+  };
+  EXPECT_EQ(choose_target(back, 2, selection_mode_e::desktop), 1u);
+
+  // A dialog of that process still does not take over in desktop mode.
+  const std::array dialog {
+    candidate_of(1, 100, 2'073'600, false, false, false),
+    candidate_of(3, 100, 200'000, true, false, true),
+  };
+  EXPECT_EQ(choose_target(dialog, 1, selection_mode_e::desktop), 1u);
+}
+
+TEST(WindowCapturePolicy, BelowTargetWindowIsHiddenOnlyWhenItsVisiblePartIsUnderTheTarget) {
   constexpr rect_i client {0, 0, 1920, 1080};
 
-  EXPECT_TRUE(rect_contains(client, {100, 100, 600, 600}));
-  EXPECT_TRUE(rect_contains(client, client));
-  EXPECT_FALSE(rect_contains(client, {1800, 100, 2000, 600}));
-  EXPECT_FALSE(rect_contains(client, {-1, 0, 100, 100}));
-  // An empty target area contains nothing.
-  EXPECT_FALSE(rect_contains({0, 0, 0, 0}, {0, 0, 0, 0}));
+  EXPECT_TRUE(hidden_below_target(primary_output, {100, 100, 600, 600}, client));
+  // Partly off the output: only the on-output part has to be under the target.
+  EXPECT_TRUE(hidden_below_target(primary_output, {1800, 100, 2400, 600}, client));
+  EXPECT_TRUE(hidden_below_target(primary_output, {-8, -8, 1928, 1088}, client));
+  // Entirely off the output: nothing of it is drawn.
+  EXPECT_TRUE(hidden_below_target(primary_output, {2000, 0, 2400, 300}, client));
+  // A target smaller than the output leaves part of the window visible.
+  EXPECT_FALSE(hidden_below_target(primary_output, {100, 100, 600, 600}, {200, 200, 1000, 1000}));
+  // A minimized target (empty client area) hides nothing.
+  EXPECT_FALSE(hidden_below_target(primary_output, {100, 100, 600, 600}, {0, 0, 0, 0}));
+}
+
+TEST(WindowCapturePolicy, LargeCaptionlessPerPixelAlphaWindowIsNotALayer) {
+  constexpr rect_i client {0, 0, 1920, 1080};
+  constexpr rect_i covering {0, 0, 1920, 1080};
+  constexpr rect_i menu {300, 100, 600, 700};
+
+  EXPECT_TRUE(large_see_through_window(true, false, false, false, covering, client));
+  // Translucent menus and tooltips are small.
+  EXPECT_FALSE(large_see_through_window(true, false, false, false, menu, client));
+  // Exactly half is kept.
+  EXPECT_FALSE(large_see_through_window(true, false, false, false, {0, 0, 960, 1080}, client));
+  // Owned, foreground, captioned or plain windows are kept.
+  EXPECT_FALSE(large_see_through_window(true, false, true, false, covering, client));
+  EXPECT_FALSE(large_see_through_window(true, false, false, true, covering, client));
+  EXPECT_FALSE(large_see_through_window(true, true, false, false, covering, client));
+  EXPECT_FALSE(large_see_through_window(false, false, false, false, covering, client));
+  EXPECT_FALSE(large_see_through_window(true, false, false, false, covering, {0, 0, 0, 0}));
+
+  auto overlay = app_window(9, 100, covering);
+  overlay.see_through_cover = true;
+  EXPECT_FALSE(is_secondary_window(overlay, target_id, app_pids, primary_output));
+}
+
+TEST(WindowCapturePolicy, FocusLeavesAnActiveAppAlone) {
+  // The target, or a dialog owned by it, is already the foreground window.
+  EXPECT_EQ(plan_focus({.target = 1, .target_enabled = false, .foreground_root = 1, .last_active_popup = 5, .popup_visible = true, .popup_enabled = true, .popup_in_app = true}), 0u);
+  EXPECT_EQ(plan_focus({.target = 1, .target_enabled = true, .foreground_root = 1}), 0u);
+  EXPECT_EQ(plan_focus({.target = 0, .target_enabled = true, .foreground_root = 7}), 0u);
+}
+
+TEST(WindowCapturePolicy, FocusGoesToTheModalDialogOfADisabledTarget) {
+  const focus_state_t modal {
+    .target = 1,
+    .target_enabled = false,
+    .foreground_root = 7,
+    .last_active_popup = 5,
+    .popup_visible = true,
+    .popup_enabled = true,
+    .popup_in_app = true,
+  };
+  EXPECT_EQ(plan_focus(modal), 5u);
+
+  // A popup that is hidden, disabled or not an app window is never focused, and neither is
+  // the disabled target.
+  auto hidden = modal;
+  hidden.popup_visible = false;
+  EXPECT_EQ(plan_focus(hidden), 0u);
+  auto disabled = modal;
+  disabled.popup_enabled = false;
+  EXPECT_EQ(plan_focus(disabled), 0u);
+  auto foreign = modal;
+  foreign.popup_in_app = false;
+  EXPECT_EQ(plan_focus(foreign), 0u);
+}
+
+TEST(WindowCapturePolicy, FocusGoesToAnEnabledTargetWithoutADialog) {
+  EXPECT_EQ(plan_focus({.target = 1, .target_enabled = true, .foreground_root = 7, .last_active_popup = 1}), 1u);
+  EXPECT_EQ(plan_focus({.target = 1, .target_enabled = true, .foreground_root = 7}), 1u);
+  EXPECT_EQ(plan_focus({.target = 1, .target_enabled = false, .foreground_root = 7}), 0u);
 }

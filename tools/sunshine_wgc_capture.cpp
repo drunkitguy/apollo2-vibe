@@ -3311,8 +3311,9 @@ private:
       session.visible = false;
     }
 
-    // A window below the target that lies inside the target's client area is fully hidden by
-    // it; it gets no layer, so a game with a window behind it keeps the single-window path.
+    // A window below the target whose part on the display lies under the target's client
+    // area is fully hidden by it; it gets no layer, so a game with a window behind it keeps
+    // the single-window composite.
     platf::dxgi::window_policy::rect_i target_client {0, 0, 0, 0};
     if (RECT client {}; IsWindowVisible(_target) && !IsIconic(_target) && GetClientRect(_target, &client)) {
       POINT origin {0, 0};
@@ -3334,7 +3335,7 @@ private:
         return w.id == planned_layer.id;
       });
       if (window == context.windows.end() ||
-          (planned_layer.below_target && platf::dxgi::window_policy::rect_contains(target_client, window->bounds))) {
+          (planned_layer.below_target && platf::dxgi::window_policy::hidden_below_target(_output, window->bounds, target_client))) {
         continue;
       }
 

@@ -80,6 +80,7 @@ namespace platf::dxgi::window_policy {
     std::int64_t client_area;
     bool new_since_launch = false;  ///< The window was not visible when the app was launched.
     std::uint32_t pid = 0;  ///< Process of the window; 0 disables the same-process rule for it.
+    bool dialog_like = false;  ///< Captioned without a maximize box, or a standard dialog (#32770).
   };
 
   /**
@@ -155,9 +156,11 @@ namespace platf::dxgi::window_policy {
         if (!c.is_foreground || !eligible(c)) {
           continue;
         }
-        // A smaller foreground window of the target's own process (an unowned dialog or
-        // message box) is drawn as a secondary window instead of replacing the target.
-        if (current_candidate != nullptr && c.id != current_candidate->id && c.pid != 0 &&
+        // A smaller dialog-like foreground window of the target's own process (an unowned
+        // dialog or message box) is drawn as a secondary window instead of replacing the
+        // target. Main-type windows of the same process (a separate render window, another
+        // document window) still win as before.
+        if (current_candidate != nullptr && c.id != current_candidate->id && c.pid != 0 && c.dialog_like &&
             c.pid == current_candidate->pid && c.client_area < current_candidate->client_area) {
           continue;
         }
@@ -189,8 +192,8 @@ namespace platf::dxgi::window_policy {
    * that existed before the launch and do not belong to the app are never chosen. In
    * desktop mode the foreground window is followed and the current target kept while it
    * remains a candidate. Minimized windows are only picked when nothing else qualifies.
-   * A foreground window does not replace the current target when both have the same
-   * non-zero `pid` and the foreground window's client area is smaller.
+   * A dialog-like foreground window does not replace the current target when both have the
+   * same non-zero `pid` and the foreground window's client area is smaller.
    */
   constexpr std::uintptr_t choose_target(
     const std::span<const window_candidate_t> candidates,
@@ -331,6 +334,7 @@ namespace platf::dxgi::window_policy {
     bool shadow = false;  ///< SysShadow, the system drop-shadow helper window.
     bool transparent = false;  ///< Layered with zero alpha.
     bool click_through = false;  ///< Layered and WS_EX_TRANSPARENT: an input-transparent overlay, never app UI.
+    bool see_through_cover = false;  ///< See large_see_through_window().
     rect_i bounds {0, 0, 0, 0};  ///< DWMWA_EXTENDED_FRAME_BOUNDS.
   };
 
@@ -370,7 +374,8 @@ namespace platf::dxgi::window_policy {
       return false;
     }
     // Layers are copied opaque, so a see-through overlay would cover the app with black.
-    if (!w.visible || w.cloaked || w.iconic || !w.root || w.shadow || w.transparent || w.click_through) {
+    if (!w.visible || w.cloaked || w.iconic || !w.root || w.shadow || w.transparent || w.click_through ||
+        w.see_through_cover) {
       return false;
     }
     if (!std::binary_search(app_pids.begin(), app_pids.end(), w.pid)) {
@@ -383,12 +388,90 @@ namespace platf::dxgi::window_policy {
   }
 
   /**
-   * @brief True when `inner` lies entirely inside `outer`. A window below the target that lies
-   * inside the target's client area is fully hidden by it and needs no layer.
+   * @brief Intersection of two rectangles; empty (zero width or height) when they do not overlap.
    */
-  constexpr bool rect_contains(const rect_i outer, const rect_i inner) noexcept {
-    return inner.left >= outer.left && inner.top >= outer.top && inner.right <= outer.right &&
-           inner.bottom <= outer.bottom && outer.right > outer.left && outer.bottom > outer.top;
+  constexpr rect_i intersect_rects(const rect_i a, const rect_i b) noexcept {
+    const rect_i r {std::max(a.left, b.left), std::max(a.top, b.top), std::min(a.right, b.right), std::min(a.bottom, b.bottom)};
+    if (r.right <= r.left || r.bottom <= r.top) {
+      return {r.left, r.top, r.left, r.top};
+    }
+    return r;
+  }
+
+  constexpr std::int64_t rect_area(const rect_i r) noexcept {
+    if (r.right <= r.left || r.bottom <= r.top) {
+      return 0;
+    }
+    return (std::int64_t {r.right} - r.left) * (std::int64_t {r.bottom} - r.top);
+  }
+
+  /**
+   * @brief True when a secondary window below the target is fully hidden in the stream: the
+   * part of it on the output lies inside the part of the target's client area on the output.
+   */
+  constexpr bool hidden_below_target(const rect_i output, const rect_i bounds, const rect_i target_client) noexcept {
+    const auto on_output = intersect_rects(bounds, output);
+    if (rect_area(on_output) == 0) {
+      return true;
+    }
+    const auto visible_target = intersect_rects(target_client, output);
+    return rect_area(visible_target) != 0 && on_output.left >= visible_target.left && on_output.top >= visible_target.top &&
+           on_output.right <= visible_target.right && on_output.bottom <= visible_target.bottom;
+  }
+
+  /**
+   * @brief True for a large see-through window that must not become a layer.
+   *
+   * Layers are copied opaque. A captionless window with per-pixel alpha (UpdateLayeredWindow)
+   * that covers more than half of the target's client area is almost always a transparent
+   * overlay; drawn opaque it would hide the app behind black. Owned and foreground windows
+   * are kept: those are the app's own dialogs and active popups.
+   */
+  constexpr bool large_see_through_window(
+    const bool per_pixel_alpha,
+    const bool captioned,
+    const bool owned,
+    const bool foreground,
+    const rect_i bounds,
+    const rect_i target_client
+  ) noexcept {
+    if (!per_pixel_alpha || captioned || owned || foreground) {
+      return false;
+    }
+    const auto target_area = rect_area(target_client);
+    return target_area != 0 && 2 * rect_area(intersect_rects(bounds, target_client)) > target_area;
+  }
+
+  /**
+   * @brief Inputs for focusing the target after it was committed (secondary window mode).
+   */
+  struct focus_state_t {
+    std::uintptr_t target = 0;
+    bool target_enabled = true;  ///< IsWindowEnabled(target); false while the app shows a modal dialog.
+    std::uintptr_t foreground_root = 0;  ///< Visible owner root of the current foreground window.
+    std::uintptr_t last_active_popup = 0;  ///< GetLastActivePopup(target).
+    bool popup_visible = false;
+    bool popup_enabled = false;
+    bool popup_in_app = false;  ///< The popup's process is in the app window set.
+  };
+
+  /**
+   * @brief The window to bring to the foreground, or 0 to leave the foreground alone.
+   *
+   * Nothing is focused while the app is already active (the foreground window is the target
+   * or one of its dialogs). Otherwise the target's last active popup (its modal dialog) is
+   * focused when it is a visible, enabled app window, else the target itself. A disabled
+   * window is never focused.
+   */
+  constexpr std::uintptr_t plan_focus(const focus_state_t &state) noexcept {
+    if (state.target == 0 || state.foreground_root == state.target) {
+      return 0;
+    }
+    if (state.last_active_popup != 0 && state.last_active_popup != state.target && state.popup_visible &&
+        state.popup_enabled && state.popup_in_app) {
+      return state.last_active_popup;
+    }
+    return state.target_enabled ? state.target : 0;
   }
 
   /**
