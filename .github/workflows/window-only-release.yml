@@ -161,14 +161,15 @@ jobs:
           body: |
             Vibepollo host build with window-only capture. When a client asks for it, the stream shows only the window of the app launched from the client. The Windows desktop, taskbar, notifications and other windows are replaced by black.
 
-            ## What's new in 1.2.0
+            ## What's new in 1.2
 
             - Menus, dropdowns, tooltips, context menus and dialogs of the launched app now appear in the stream at their true position and in their true stacking order, including file pickers and dialogs opened from other dialogs.
             - Dialogs no longer replace the main window in the stream and no longer restart capture; they are drawn over it.
             - Each of these windows is captured on its own, so other apps, the desktop, the taskbar and system UI stay hidden even when they lie over the app.
             - Dialogs that open mostly off the streamed display are moved onto it once. Menus and popups are never moved.
+            - 1.2.1: starting or resuming a stream no longer takes the focus away from a dialog the app is showing; when the app is in the background, its open dialog gets the focus instead of the disabled main window. A separate window of the same app that the user switches to, such as a game window opened next to a game list, becomes the streamed window again.
 
-            To go back to showing only the app's main window, add the line `window_only_secondary_windows = disabled` to `sunshine.conf` in the `config` folder of the install directory, then restart the host. With that setting the host behaves exactly like 1.1.1.
+            To go back to showing only the app's main window, add the line `window_only_secondary_windows = disabled` to `sunshine.conf` in the `config` folder of the install directory, then restart the host. With that setting the host behaves exactly like 1.1.1, including which window is streamed.
 
             ## Install
 
@@ -192,7 +193,11 @@ jobs:
             ## Known limitations
 
             - Windows of the app are shown, including menus, dropdowns and dialogs. Prompts hosted by Windows itself in other processes (credential prompts, the Open with picker, the emoji panel) stay black.
-            - Translucent menu edges may show a thin black border.
+            - Translucent menu edges may show a thin black border. Large see-through overlay windows of the app are not shown, so they cannot cover it with black.
+            - A smaller dialog window of the app that has no owner is drawn over the main window instead of replacing it. Larger windows of the app, and windows that are not dialogs, still become the streamed window as before.
+            - Prompts that Windows shows in its own processes on behalf of the app (for example a sign-in prompt that belongs to the app window) stay black. In 1.1.1 such a prompt replaced the app window in the stream.
+            - Windows whose owner window is hidden can now become the streamed window; in 1.1.1 they only could while they were in the foreground.
+            - Menus of Store apps that open in separate frame windows are not shown.
             - A brand-new popup can appear a few frames after it opens on the host. Popups that open again appear without that delay.
             - Menus and dialogs of another app that starts after the launch are not shown; that app's main window is shown only when it becomes the streamed window, as before.
             - Games in legacy exclusive fullscreen may produce no picture. Use borderless or windowed fullscreen.
