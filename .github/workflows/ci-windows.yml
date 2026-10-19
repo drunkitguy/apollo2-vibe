@@ -688,7 +688,8 @@ jobs:
         run: |
           set -euo pipefail
           for test_name in \
-            test_component_qos_policy; do
+            test_component_qos_policy \
+            test_component_stream_pacing_policy; do
             test_exe="$(find build -type f -name "${test_name}.exe" -print -quit)"
             if [[ -z "${test_exe}" ]]; then
               echo "::error::${test_name}.exe was not built" >&2

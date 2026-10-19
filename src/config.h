@@ -19,6 +19,7 @@
 // local includes
 #include "nvenc/nvenc_config.h"
 #include "qos_policy.h"
+#include "stream_pacing_policy.h"
 
 namespace config {
   constexpr int SUNSHINE_VIRTUAL_DISPLAY_MAX_PERMANENT_COUNT = 4;
@@ -273,9 +274,8 @@ namespace config {
     int lan_encryption_mode;
     int wan_encryption_mode;
 
-    // Cap the RTP send pacer (kbps). 0 = legacy ~80% of 1 Gbps assumption, which
-    // collapses to a no-op on a slower WiFi link. Set to ~1.3x stream bitrate when
-    // streaming over WiFi to spread the per-frame burst across the full frame slot.
+    // Cap the RTP send pacer (kbps). 0 = pacing_mode decides. When set it always wins,
+    // never below 110% of the stream bitrate.
     int pacing_max_bitrate_kbps;
 
     // Limit the packetsize to avoid fragmentation on a low MTU link. 0 = off.
@@ -283,6 +283,12 @@ namespace config {
 
     // QoS class of audio packets for clients that ask for QoS. voice is the 1.2.2 behaviour.
     stream_qos::audio_qos_e audio_qos;
+
+    // Send pacing rate when pacing_max_bitrate_kbps is 0. auto paces at
+    // pacing_auto_multiplier_percent of the stream bitrate, clamped to 300-800 Mbps;
+    // legacy is the 1.2.2 rate of ~80% of 1 Gbps.
+    stream_pacing::pacing_mode_e pacing_mode;
+    int pacing_auto_multiplier_percent;
   };
 
   struct nvhttp_t {

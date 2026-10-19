@@ -975,9 +975,11 @@ namespace config {
     ENCRYPTION_MODE_NEVER,  // lan_encryption_mode
     ENCRYPTION_MODE_OPPORTUNISTIC,  // wan_encryption_mode
 
-    0,  // pacing_max_bitrate_kbps (0 = legacy 1 Gbps Ethernet assumption)
+    0,  // pacing_max_bitrate_kbps (0 = pacing_mode decides)
     0,  // packetsize (0 = off)
     stream_qos::default_audio_qos,  // audio_qos
+    stream_pacing::default_pacing_mode,  // pacing_mode
+    stream_pacing::default_auto_multiplier_percent,  // pacing_auto_multiplier_percent
   };
 
   nvhttp_t nvhttp {
@@ -2075,6 +2077,14 @@ namespace config {
 
     int_between_f(vars, "fec_percentage", stream.fec_percentage, {1, 255});
     int_between_f(vars, "pacing_max_bitrate_kbps", stream.pacing_max_bitrate_kbps, {0, 10000000});
+    generic_f(vars, "pacing_mode", stream.pacing_mode, [](const std::string_view value) {
+      if (const auto parsed = stream_pacing::pacing_mode_from_view(value)) {
+        return *parsed;
+      }
+      BOOST_LOG(warning) << "config: unsupported pacing_mode value: " << value << ", using " << stream_pacing::to_string(stream_pacing::default_pacing_mode);
+      return stream_pacing::default_pacing_mode;
+    });
+    int_between_f(vars, "pacing_auto_multiplier_percent", stream.pacing_auto_multiplier_percent, {stream_pacing::min_auto_multiplier_percent, stream_pacing::max_auto_multiplier_percent});
     int_between_f(vars, "packetsize", stream.packetsize, {0, PACKETSIZE_MAX});
     generic_f(vars, "audio_qos", stream.audio_qos, [](const std::string_view value) {
       if (const auto parsed = stream_qos::audio_qos_from_view(value)) {

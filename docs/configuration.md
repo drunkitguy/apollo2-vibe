@@ -2199,6 +2199,69 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### pacing_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            How fast each video frame is sent when `pacing_max_bitrate_kbps` is `0`.
+            Sending a frame as one fast burst makes Wi-Fi access points deliver it unevenly; pacing spreads it over
+            a few milliseconds. An explicit `pacing_max_bitrate_kbps` always wins over this option.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            pacing_mode = legacy
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="2">Choices</td>
+        <td>auto</td>
+        <td>Pace at `pacing_auto_multiplier_percent` of the stream bitrate (4 times by default), clamped to
+            300-800 Mbps and never below 110% of the stream bitrate. A 100 Mbps stream is sent at 400 Mbps.</td>
+    </tr>
+    <tr>
+        <td>legacy</td>
+        <td>Pace at 800 Mbps (80% of 1 Gbps), the behaviour of window-only host 1.2.2.</td>
+    </tr>
+</table>
+
+### pacing_auto_multiplier_percent
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            The send pacing rate of `pacing_mode = auto`, in percent of the stream bitrate. The result is clamped
+            to 300-800 Mbps. Lower values spread each frame over more time.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            400
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">150-1000</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            pacing_auto_multiplier_percent = 400
+            @endcode</td>
+    </tr>
+</table>
+
 ## Config Files
 
 ### file_apps
@@ -4408,7 +4471,7 @@ Enables NVIDIA temporal adaptive quantization when supported.
 
 ### pacing_max_bitrate_kbps
 
-Sets the maximum bitrate, in Kbps, considered by the network pacing policy. Set `0` to use the automatic default.
+Sets the video send pacing rate, in Kbps. When set, it always wins over `pacing_mode`, but the pacer never runs below 110% of the stream bitrate. Set `0` to let `pacing_mode` decide.
 
 ### packetsize
 
