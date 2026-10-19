@@ -407,85 +407,40 @@ public:
   }
 
   /**
-   * @brief Enables SeIncreaseBasePriorityPrivilege on the process token when the token holds it.
+   * @brief Sets the HIGH GPU scheduling class for capture performance under high GPU load.
    *
-   * A token can hold the privilege in the disabled state. Enabling it lets the REALTIME
-   * GPU scheduling class succeed. Failure is expected for normal user tokens and only logged.
-   *
-   * @return true if the privilege is enabled, false otherwise.
-   */
-  static bool enable_increase_base_priority_privilege() {
-    winrt::handle token;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, token.put())) {
-      BOOST_LOG(debug) << "OpenProcessToken failed while enabling SeIncreaseBasePriorityPrivilege: " << GetLastError();
-      return false;
-    }
-
-    LUID luid {};
-    if (!LookupPrivilegeValueW(nullptr, L"SeIncreaseBasePriorityPrivilege", &luid)) {
-      BOOST_LOG(debug) << "LookupPrivilegeValueW failed for SeIncreaseBasePriorityPrivilege: " << GetLastError();
-      return false;
-    }
-
-    TOKEN_PRIVILEGES privileges {};
-    privileges.PrivilegeCount = 1;
-    privileges.Privileges[0].Luid = luid;
-    privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-    if (!AdjustTokenPrivileges(token.get(), FALSE, &privileges, sizeof(privileges), nullptr, nullptr)) {
-      BOOST_LOG(debug) << "AdjustTokenPrivileges failed for SeIncreaseBasePriorityPrivilege: " << GetLastError();
-      return false;
-    }
-    // AdjustTokenPrivileges succeeds without enabling anything when the token lacks the privilege.
-    if (GetLastError() == ERROR_NOT_ALL_ASSIGNED) {
-      BOOST_LOG(debug) << "The process token does not hold SeIncreaseBasePriorityPrivilege";
-      return false;
-    }
-    return true;
-  }
-
-  /**
-   * @brief Sets GPU scheduling priority for optimal capture performance under high GPU load.
-   *
-   * Tries the REALTIME class first, after enabling SeIncreaseBasePriorityPrivilege when the
-   * token holds it, then falls back to HIGH. This step is best effort: the helper keeps
-   * running at the default GPU priority when both classes are refused.
+   * The helper only copies frames, so HIGH is enough. REALTIME is left to the main process,
+   * which uses it only where it is safe: on NVIDIA GPUs with HAGS enabled, REALTIME can
+   * freeze the encoder or crash the driver, and the main process falls back to HIGH there
+   * (nv_realtime_hags). The helper cannot see that decision without an IPC change, so it
+   * never asks for REALTIME, which also needs SeIncreaseBasePriorityPrivilege. This step is
+   * best effort: the helper keeps running at the default GPU priority when HIGH is refused.
    *
    * @return true if GPU priority was successfully set, false otherwise.
    */
   bool initialize_gpu_scheduling_priority() {
     HMODULE gdi32 = GetModuleHandleA("gdi32.dll");
     if (!gdi32) {
-      BOOST_LOG(warning) << "Failed to get gdi32.dll handle for GPU priority adjustment";
+      BOOST_LOG(warning) << "Failed to get gdi32.dll handle for GPU priority adjustment; capture continues at the default GPU priority";
       return false;
     }
 
     auto d3dkmt_set_process_priority = reinterpret_cast<PD3DKMTSetProcessSchedulingPriorityClass>(GetProcAddress(gdi32, "D3DKMTSetProcessSchedulingPriorityClass"));
     if (!d3dkmt_set_process_priority) {
-      BOOST_LOG(warning) << "D3DKMTSetProcessSchedulingPriorityClass not available, GPU priority not set";
+      BOOST_LOG(warning) << "D3DKMTSetProcessSchedulingPriorityClass not available; capture continues at the default GPU priority";
       return false;
     }
 
-    const bool privilege_enabled = enable_increase_base_priority_privilege();
-
-    HRESULT hr = d3dkmt_set_process_priority(GetCurrentProcess(), static_cast<LONG>(D3DKMT_SchedulingPriorityClass::REALTIME));
-    if (SUCCEEDED(hr)) {
-      BOOST_LOG(info) << "GPU scheduling priority set to REALTIME for optimal capture performance";
-      _gpu_priority_set = true;
-      return true;
+    const HRESULT hr = d3dkmt_set_process_priority(GetCurrentProcess(), static_cast<LONG>(D3DKMT_SchedulingPriorityClass::HIGH));
+    if (FAILED(hr)) {
+      BOOST_LOG(warning) << "Failed to set GPU scheduling priority to HIGH: " << hr
+                         << "; capture continues at the default GPU priority";
+      return false;
     }
-    BOOST_LOG(warning) << "Failed to set GPU scheduling priority to REALTIME: " << hr
-                       << (privilege_enabled ? "" : " (SeIncreaseBasePriorityPrivilege is not available to this process)")
-                       << "; trying HIGH";
 
-    hr = d3dkmt_set_process_priority(GetCurrentProcess(), static_cast<LONG>(D3DKMT_SchedulingPriorityClass::HIGH));
-    if (SUCCEEDED(hr)) {
-      BOOST_LOG(info) << "GPU scheduling priority set to HIGH";
-      _gpu_priority_set = true;
-      return true;
-    }
-    BOOST_LOG(warning) << "Failed to set GPU scheduling priority to HIGH: " << hr
-                       << "; capture continues at the default GPU priority";
-    return false;
+    BOOST_LOG(info) << "GPU scheduling priority set to HIGH";
+    _gpu_priority_set = true;
+    return true;
   }
 
   /**

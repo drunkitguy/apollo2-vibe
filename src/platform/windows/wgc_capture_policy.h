@@ -57,9 +57,9 @@ namespace platf::dxgi::wgc_policy {
    * @brief Whether the helper must exit when a start-up step fails.
    *
    * DPI awareness may already be chosen for the process by Windows, and the GPU
-   * scheduling priority needs a privilege that a normal user token may lack, so
-   * both are best effort. The other steps keep the helper's capture thread
-   * working as designed and stay fatal.
+   * scheduling priority (HIGH) may be refused by the driver or the OS, so both are
+   * best effort. The other steps keep the helper's capture thread working as
+   * designed and stay fatal.
    */
   constexpr bool helper_init_step_required(const helper_init_step_e step) noexcept {
     switch (step) {

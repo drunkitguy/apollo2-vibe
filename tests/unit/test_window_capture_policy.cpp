@@ -901,8 +901,7 @@ TEST(WindowCapturePolicy, FocusGoesToAnEnabledTargetWithoutADialog) {
 TEST(WgcHelperInitPolicy, GpuPriorityAndDpiAwarenessAreBestEffort) {
   using platf::dxgi::wgc_policy::helper_init_step_e;
   using platf::dxgi::wgc_policy::helper_init_step_required;
-  // A normal user token may lack the privilege for REALTIME GPU scheduling; the helper
-  // must still start.
+  // A refused GPU scheduling class must not stop the helper from starting.
   EXPECT_FALSE(helper_init_step_required(helper_init_step_e::gpu_scheduling_priority));
   EXPECT_FALSE(helper_init_step_required(helper_init_step_e::dpi_awareness));
 }
