@@ -235,6 +235,10 @@ namespace proc {
 #ifdef _WIN32
     running_app_state_t running_app_state() const;
     bool running_app_contains_pid(uint32_t pid);
+    /**
+     * @brief Process ids running_app_contains_pid() accepts, from a single job query; sorted.
+     */
+    std::vector<uint32_t> running_app_pids();
 #endif
 
     // Hot-update app list and environment without disrupting a running app

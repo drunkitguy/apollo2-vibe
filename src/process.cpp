@@ -2515,6 +2515,33 @@ namespace proc {
     }
   }
 
+  std::vector<uint32_t> proc_t::running_app_pids() {
+    std::lock_guard running_state_lock(_running_state_mutex);
+    std::vector<uint32_t> pids;
+    if (!has_trackable_running_app()) {
+      return pids;
+    }
+
+    try {
+      if (_process) {
+        pids.push_back(static_cast<uint32_t>(_process.id()));
+      }
+    } catch (...) {
+    }
+    try {
+      if (_process_group) {
+        for (const auto pid : process_group_pids(_process_group)) {
+          pids.push_back(static_cast<uint32_t>(pid));
+        }
+      }
+    } catch (...) {
+    }
+    std::erase(pids, 0u);
+    std::sort(pids.begin(), pids.end());
+    pids.erase(std::unique(pids.begin(), pids.end()), pids.end());
+    return pids;
+  }
+
   running_app_state_t proc_t::running_app_state() const {
     std::lock_guard running_state_lock(_running_state_mutex);
     running_app_state_t state;

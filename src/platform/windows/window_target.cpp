@@ -221,6 +221,7 @@ namespace platf::window_target {
     struct app_selection_t {
       window_policy::selection_mode_e mode = window_policy::selection_mode_e::desktop;
       std::optional<app_matcher_t> matcher;
+      bool job_matcher = false;  ///< The matcher tests job membership (one job query per call).
     };
 
     app_selection_t load_app_selection() {
@@ -231,6 +232,9 @@ namespace platf::window_target {
       app_selection_t selection;
       selection.matcher = foreground_app::active_app_window_matcher();
       selection.mode = window_policy::selection_mode_for(app.has_active_app, launches_process, selection.matcher.has_value());
+      // Mirrors foreground_app::active_app_window_matcher(): Playnite apps match by path,
+      // other trackable apps by job membership.
+      selection.job_matcher = selection.matcher.has_value() && app.trackable && !app.uses_playnite;
       return selection;
     }
 
@@ -352,7 +356,16 @@ namespace platf::window_target {
       std::vector<std::uint32_t> seeds;
       std::vector<std::uint32_t> excluded;
       std::vector<DWORD> checked_pids;  ///< Processes already checked for seeds.
+      const std::vector<std::uint32_t> *job_pids;  ///< Sorted job members, queried once per poll; null to use the matcher.
     };
+
+    /**
+     * @brief Captioned without a maximize box (a dialog frame), or a standard dialog.
+     */
+    bool is_dialog_like(HWND hwnd) {
+      const auto style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+      return ((style & WS_CAPTION) == WS_CAPTION && (style & WS_MAXIMIZEBOX) == 0) || window_class_is(hwnd, L"#32770");
+    }
 
     const process_info_t &process_of(enum_context_t &context, const DWORD pid) {
       auto process = context.processes.find(pid);
@@ -375,9 +388,12 @@ namespace platf::window_target {
       context.checked_pids.push_back(pid);
 
       const auto &info = process_of(context, pid);
+      const bool matches = context.job_pids != nullptr ?
+                             std::binary_search(context.job_pids->begin(), context.job_pids->end(), static_cast<std::uint32_t>(pid)) :
+                             (*context.matcher)(pid, info.executable);
       if (foreground_app::is_windows_desktop_ui_process(info.executable)) {
         context.excluded.push_back(pid);
-      } else if ((*context.matcher)(pid, info.executable)) {
+      } else if (matches) {
         context.seeds.push_back(pid);
       }
     }
@@ -449,6 +465,7 @@ namespace platf::window_target {
         .new_since_launch = context.launch_windows &&
                             !std::binary_search(context.launch_windows->begin(), context.launch_windows->end(), reinterpret_cast<std::uintptr_t>(hwnd)),
         .pid = context.secondary_windows ? static_cast<std::uint32_t>(pid) : 0u,
+        .dialog_like = context.secondary_windows && is_dialog_like(hwnd),
       });
       return TRUE;
     }
@@ -588,6 +605,34 @@ namespace platf::window_target {
         AttachThreadInput(own_thread, foreground_thread, FALSE);
       }
     }
+    /**
+     * @brief Focus for secondary window mode: leaves an active app alone and focuses the
+     * target's modal dialog instead of the disabled target (window_policy::plan_focus).
+     */
+    void focus_app_window(HWND target, const std::vector<std::uint32_t> &app_pids) {
+      if (!IsWindow(target)) {
+        return;
+      }
+
+      window_policy::focus_state_t state {
+        .target = reinterpret_cast<std::uintptr_t>(target),
+        .target_enabled = IsWindowEnabled(target) != FALSE,
+      };
+      if (HWND foreground = GetForegroundWindow()) {
+        state.foreground_root = reinterpret_cast<std::uintptr_t>(visible_owner_root(foreground));
+      }
+      if (HWND popup = GetLastActivePopup(target); popup != nullptr && popup != target) {
+        const DWORD pid = content_process_id(popup);
+        state.last_active_popup = reinterpret_cast<std::uintptr_t>(popup);
+        state.popup_visible = IsWindowVisible(popup) != FALSE;
+        state.popup_enabled = IsWindowEnabled(popup) != FALSE;
+        state.popup_in_app = pid != 0 && std::binary_search(app_pids.begin(), app_pids.end(), static_cast<std::uint32_t>(pid));
+      }
+
+      if (const auto chosen = window_policy::plan_focus(state); chosen != 0) {
+        focus_window(reinterpret_cast<HWND>(chosen));
+      }
+    }
   }  // namespace
 
   void mark_launch() {
@@ -615,6 +660,12 @@ namespace platf::window_target {
   choose_result_t choose(std::uintptr_t current, const bool secondary_windows) {
     const auto selection = current_app_selection();
     const auto windows_at_launch = launch_windows();
+    const bool collect_seeds = secondary_windows && selection.mode == window_policy::selection_mode_e::app_matcher &&
+                               selection.matcher.has_value();
+    std::vector<std::uint32_t> job_pids;
+    if (collect_seeds && selection.job_matcher) {
+      job_pids = proc::proc.running_app_pids();
+    }
 
     enum_context_t context {
       .matcher = selection.matcher,
@@ -624,14 +675,14 @@ namespace platf::window_target {
       .own_pid = GetCurrentProcessId(),
       .secondary_windows = secondary_windows,
       // Only the app matcher mode adds processes beyond the target's own.
-      .collect_seeds = secondary_windows && selection.mode == window_policy::selection_mode_e::app_matcher &&
-                       selection.matcher.has_value(),
+      .collect_seeds = collect_seeds,
       .processes = {},
       .candidates = {},
       .foreground_root = 0,
       .seeds = {},
       .excluded = {},
       .checked_pids = {},
+      .job_pids = collect_seeds && selection.job_matcher ? &job_pids : nullptr,
     };
     EnumWindows(enum_candidate, reinterpret_cast<LPARAM>(&context));
 
@@ -836,6 +887,7 @@ namespace platf::window_target {
       }
 
       const auto hwnd = reinterpret_cast<HWND>(target);
+      const auto focus_pids = _secondary_windows ? _window_set.pids : std::vector<std::uint32_t> {};
       lock.unlock();
       bool done = _placement_done;
       if (!done) {
@@ -844,7 +896,11 @@ namespace platf::window_target {
       // A minimized window is focused once it has been restored.
       const bool focus_now = !_focused && !IsIconic(hwnd);
       if (focus_now) {
-        focus_window(hwnd);
+        if (_secondary_windows) {
+          focus_app_window(hwnd, focus_pids);
+        } else {
+          focus_window(hwnd);
+        }
       }
       lock.lock();
 
