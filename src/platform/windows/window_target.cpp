@@ -730,15 +730,18 @@ namespace platf::window_target {
 
     struct dialogs_context_t {
       HWND target;
+      HWND foreground;
       const std::vector<std::uint32_t> &pids;
       std::vector<HWND> dialogs;
-    } context {reinterpret_cast<HWND>(target), pids, {}};
+    } context {reinterpret_cast<HWND>(target), GetForegroundWindow(), pids, {}};
 
-    // Dialogs (captioned, not tool windows) of the app; popups and menus are never moved.
+    // Dialogs of the app: captioned, not tool windows, and owned or active. Popups and menus
+    // are never moved, nor are the app's other main windows (an inactive unowned window).
     EnumWindows(
       [](HWND hwnd, LPARAM param) -> BOOL {
         auto &context = *reinterpret_cast<dialogs_context_t *>(param);
-        if (hwnd == context.target || !IsWindowVisible(hwnd) || IsIconic(hwnd) || GetAncestor(hwnd, GA_ROOT) != hwnd) {
+        if (hwnd == context.target || !IsWindowVisible(hwnd) || IsIconic(hwnd) || GetAncestor(hwnd, GA_ROOT) != hwnd ||
+            (GetWindow(hwnd, GW_OWNER) == nullptr && hwnd != context.foreground)) {
           return TRUE;
         }
         const auto style = GetWindowLongPtrW(hwnd, GWL_STYLE);
