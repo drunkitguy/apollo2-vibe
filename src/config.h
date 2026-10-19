@@ -244,6 +244,7 @@ namespace config {
     bool wgc_pacing_smoothing;  ///< Smooth WGC delivered frame cadence under low-latency (Reflex) source caps by snapping the pacing-group re-anchor back onto the prior grid instead of the jittery arrival phase. Disable for byte-for-byte legacy pacing.
     std::string fallback_mode;
     bool ignore_encoder_probe_failure;
+    bool window_only_secondary_windows;  ///< Window-only streams also show the app's menus, popups and dialogs. Disable for the single-window behaviour of host 1.1.1.
   };
 
   struct audio_t {

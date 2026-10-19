@@ -211,7 +211,9 @@ namespace platf::dxgi {
       }
 
       // Moving and focusing the target can block on its process, so the tracker thread does it.
-      const bool secondary_windows = false;
+      // window_only_secondary_windows = disabled keeps the single-window behaviour, target
+      // rules included.
+      const bool secondary_windows = ::config::video.window_only_secondary_windows;
       auto tracker = std::make_unique<window_target::tracker_t>(output, secondary_windows);
       const auto hwnd = tracker->select_now();
       ipc_session.set_window_target(hwnd);

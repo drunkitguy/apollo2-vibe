@@ -161,6 +161,15 @@ jobs:
           body: |
             Vibepollo host build with window-only capture. When a client asks for it, the stream shows only the window of the app launched from the client. The Windows desktop, taskbar, notifications and other windows are replaced by black.
 
+            ## What's new in 1.2.0
+
+            - Menus, dropdowns, tooltips, context menus and dialogs of the launched app now appear in the stream at their true position and in their true stacking order, including file pickers and dialogs opened from other dialogs.
+            - Dialogs no longer replace the main window in the stream and no longer restart capture; they are drawn over it.
+            - Each of these windows is captured on its own, so other apps, the desktop, the taskbar and system UI stay hidden even when they lie over the app.
+            - Dialogs that open mostly off the streamed display are moved onto it once. Menus and popups are never moved.
+
+            To go back to showing only the app's main window, add the line `window_only_secondary_windows = disabled` to `sunshine.conf` in the `config` folder of the install directory, then restart the host. With that setting the host behaves exactly like 1.1.1.
+
             ## Install
 
             1. Install `Vibepollo-WindowOnly-${{ needs.check.outputs.version }}.msi` on the Windows PC. The MSI is not code signed, so SmartScreen may warn: choose "More info", then "Run anyway". The `.sha256` file lets you check the download.
@@ -182,7 +191,10 @@ jobs:
 
             ## Known limitations
 
-            - Only the app's main window is shown. Menus, dropdowns and other popup windows of the app are not visible.
+            - Windows of the app are shown, including menus, dropdowns and dialogs. Prompts hosted by Windows itself in other processes (credential prompts, the Open with picker, the emoji panel) stay black.
+            - Translucent menu edges may show a thin black border.
+            - A brand-new popup can appear a few frames after it opens on the host. Popups that open again appear without that delay.
+            - Menus and dialogs of another app that starts after the launch are not shown; that app's main window is shown only when it becomes the streamed window, as before.
             - Games in legacy exclusive fullscreen may produce no picture. Use borderless or windowed fullscreen.
             - UAC prompts and the lock screen are shown as the secure desktop so they can be answered; the stream returns to the window afterwards.
             - Switching from a launcher to the game window freezes the picture for about a second while capture restarts.

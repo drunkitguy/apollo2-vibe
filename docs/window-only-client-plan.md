@@ -42,7 +42,7 @@ Why the virtual display matters: WGC delivers frames at most at the rate DWM com
 | Cursor | `GraphicsCaptureSession.IsCursorCaptureEnabled` defaults to true and Vibepollo never turns it off, so WGC draws the cursor into window frames when it is over the window, at the right position. No change. |
 | Input | Unchanged because pixels stay at true desktop positions. Keyboard, relative mouse and gamepad go to the foreground window, so the host focuses the target window when it selects it. |
 | Games that switch windows | The host re-evaluates the target every 250 ms and, after the choice has been stable for 750 ms, restarts WGC capture on the new window through the existing capture reinit path. This costs roughly 0.5 to 1.5 s of frozen picture per switch (launcher to game, game to crash dialog). An in-place retarget is a follow-up. |
-| Launchers and popups | Only the chosen top-level window is captured. Context menus, combo-box dropdowns and other separate top-level popups of that app are not visible. Games are rarely affected; desktop apps and launchers can be. The client has a toggle to turn window-only off. |
+| Launchers and popups | Up to host 1.1.1 only the chosen top-level window is captured, so context menus, combo-box dropdowns and other separate top-level popups of that app are not visible. Host 1.2.0 also composites the app's own menus, popups and dialogs as extra window layers; see `docs/window-only-popups-plan.md`. The client has a toggle to turn window-only off. |
 | Exclusive fullscreen | Legacy exclusive-fullscreen games may produce no WGC window frames. Borderless fullscreen works with WGC window capture. Documented limitation. |
 | UAC and lock screen | The existing secure-desktop logic swaps to DXGI duplication, which shows the secure desktop (dimmed desktop plus prompt). That is intentional so the user can answer the prompt. Capture returns to window mode afterwards via the normal reinit. |
 | Audio | Still the whole system mix. Per-process loopback is a follow-up. |
@@ -277,7 +277,7 @@ Host behaviour (manual test on the user's PC, since CI cannot run a GPU session)
 | Wrong window chosen (launcher kept alive, overlay processes, games that spawn outside the job object). | Foreground-follow fallback, stickiness, debounce; logs name exe and class for each change so the rules can be tuned. The client toggle turns the feature off. |
 | Capture restart on every target change causes a 0.5 to 1.5 s freeze. | Debounce (750 ms) and 2 s cooldown. Follow-up: in-place retarget message to the helper. |
 | Taps on the black margin around a fixed-size window reach what lies under it on the host. | Resizable windows are sized to fill the display, so only fixed-size windows leave a margin. Absolute input is not clamped: mouse, touch and pen use separate scaling paths, and relative mouse and keyboard input can reach other windows anyway, so a partial clamp would not make the margin safe. Documented in the release notes. |
-| Menus and popups not visible for desktop apps. | Documented; games are the target use. Follow-up: composite owned popups as extra WGC items. |
+| Menus and popups not visible for desktop apps. | Addressed in host 1.2.0: the app's own top-level windows are composited as extra WGC window layers (`docs/window-only-popups-plan.md`). |
 | Exclusive-fullscreen games deliver no window frames. | Documented; ask the user to use borderless. Follow-up: fall back to display capture when `fullscreen_detector` reports exclusive D3D fullscreen. |
 | Yellow capture border drawn on the host monitor on some Windows builds. | `IsBorderRequired(false)` is already attempted. The border is never part of the captured frame, so the stream is unaffected. |
 | Publicly known signing key allows a third party to build an APK that installs over this one. | Only matters for APKs obtained elsewhere; documented in the vibe-window README. A private key via repository secrets is a follow-up. |
@@ -291,4 +291,4 @@ Host behaviour (manual test on the user's PC, since CI cannot run a GPU session)
 - Optional scale-to-fit for small fixed-size windows, with matching input remapping through `touch_port_t`.
 - Per-app `window-only` setting in `apps.json` and the web UI, and a global host config key.
 - Per-process audio via WASAPI process loopback.
-- Composite owned popup windows of the target.
+- Composite owned popup windows of the target. Done in host 1.2.0, see `docs/window-only-popups-plan.md`.

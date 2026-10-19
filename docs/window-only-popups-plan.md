@@ -1,6 +1,6 @@
 # Window-only capture: menus, popups and dialogs of the app (host 1.2.0)
 
-Status: plan, not implemented. Base: branch `claude/clever-clarke-k7hhhj` at `0aaad3e` (release `window-host-v1.1.1`). Line numbers below refer to that commit. Read together with `docs/window-only-client-plan.md`, which describes the window-only design this plan extends.
+Status: implemented for host 1.2.0 (kill switch `window_only_secondary_windows`, default `enabled`). Base: branch `claude/clever-clarke-k7hhhj` at `0aaad3e` (release `window-host-v1.1.1`). Line numbers below refer to that commit. Read together with `docs/window-only-client-plan.md`, which describes the window-only design this plan extends.
 
 ## 1. Problem
 

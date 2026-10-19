@@ -952,6 +952,7 @@ namespace config {
     true,  // wgc_pacing_smoothing
     "1920x1080x60",  // fallback_mode
     false,  // ignore_encoder_probe_failure
+    true,  // window_only_secondary_windows
   };
 
   audio_t audio {
@@ -1949,6 +1950,7 @@ namespace config {
 
     string_f(vars, "fallback_mode", video.fallback_mode);
     bool_f(vars, "ignore_encoder_probe_failure", video.ignore_encoder_probe_failure);
+    bool_f(vars, "window_only_secondary_windows", video.window_only_secondary_windows);
 
     // Windows-only frame limiter options
     bool_f(vars, "frame_limiter_enable", frame_limiter.enable);

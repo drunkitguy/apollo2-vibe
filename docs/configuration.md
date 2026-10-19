@@ -4301,6 +4301,10 @@ Enables the Vulkan HDR layer used by the display stack when HDR Vulkan capture s
 
 Enables WGC pacing smoothing so capture re-anchors to the pacing grid instead of raw frame-arrival timing.
 
+### window_only_secondary_windows
+
+In window-only streams (the client asks to show only the app window), also shows the launched app's own menus, dropdowns, tooltips, context menus and dialogs at their true position. Windows of other apps, the desktop and the taskbar stay hidden either way. Set `window_only_secondary_windows = disabled` in `sunshine.conf` to show only the app's main window, as before. Default: `enabled`. There is no web UI field for this option.
+
 ### auto_capture_sink
 
 Automatically selects the audio capture sink when no explicit virtual sink is configured.
