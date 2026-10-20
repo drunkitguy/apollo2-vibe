@@ -279,13 +279,14 @@ namespace platf::dxgi {
   /**
    * @brief Debug-level min/max/avg timers of the shared texture hand-off from the capture helper.
    *
-   * They measure how long the WGC copy path waits for the helper's keyed mutex and how long
-   * the copy into the encoder image takes to submit. Used by the capture thread only; they
-   * collect nothing unless the log level is debug or lower.
+   * They measure how long the WGC copy path waits for the helper's keyed mutex (including
+   * waits that time out) and the CPU time to submit the copy into the encoder image, not
+   * its GPU time. Used by the capture thread only; they collect nothing, and the clock is
+   * not read for them, unless the log level is debug or lower.
    */
   struct wgc_copy_timers_t {
     logging::min_max_avg_periodic_logger<double> shared_mutex_wait {debug, "WGC host: shared texture keyed mutex wait", "ms"};
-    logging::min_max_avg_periodic_logger<double> copy_to_encoder {debug, "WGC host: copy to encoder image", "ms"};
+    logging::min_max_avg_periodic_logger<double> copy_to_encoder {debug, "WGC host: copy to encoder image submit", "ms"};
   };
 
   display_wgc_ipc_vram_t::display_wgc_ipc_vram_t() = default;
@@ -447,9 +448,13 @@ namespace platf::dxgi {
     texture2d_t src;
     uint64_t frame_qpc = 0;
     winrt::com_ptr<ID3D11Texture2D> gpu_tex;
-    const auto shared_mutex_wait_start = std::chrono::steady_clock::now();
+    const bool time_shared_mutex = _copy_timers && _copy_timers->shared_mutex_wait.is_enabled();
+    const auto shared_mutex_wait_start = time_shared_mutex ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
     capture_status = _ipc_session->lock_frame(gpu_tex, frame_qpc);
-    const auto shared_mutex_wait = std::chrono::steady_clock::now() - shared_mutex_wait_start;
+    if (time_shared_mutex) {
+      // Recorded before the status check so waits that time out are included.
+      _copy_timers->shared_mutex_wait.collect_and_log(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - shared_mutex_wait_start).count());
+    }
     if (capture_status != capture_e::ok) {
       return capture_status;
     }
@@ -476,7 +481,6 @@ namespace platf::dxgi {
     const auto capture_mutex_wait_ms = std::chrono::duration<double, std::milli>(capture_mutex_wait).count();
     const auto copy_submit_ms = std::chrono::duration<double, std::milli>(copy_submit).count();
     if (_copy_timers) {
-      _copy_timers->shared_mutex_wait.collect_and_log(std::chrono::duration<double, std::milli>(shared_mutex_wait).count());
       _copy_timers->copy_to_encoder.collect_and_log(copy_submit_ms);
     }
     const bool slow_lock = capture_mutex_wait_ms > 1.0;
