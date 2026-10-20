@@ -309,27 +309,27 @@ Each commit must pass `./gradlew testDebugUnitTest` (or the configuration CI alr
 
 ## HOST: this repository, version 1.2.2 to 1.3.0
 
-### H1. WGC helper: GPU realtime priority is best effort
+### H1. WGC helper: GPU priority is best effort (HIGH only)
 
 Where: `tools/sunshine_wgc_capture.cpp`:
 
 - `SystemInitializer::initialize_gpu_scheduling_priority()` (384 to 408);
 - `initialize_all()` (437 to 445).
 
-Behaviour:
+Behaviour (as implemented in 1.3.1, manager decision after review):
 
-1. Before the D3DKMT call, try to enable `SeIncreaseBasePriorityPrivilege` on the process token with `OpenProcessToken` + `LookupPrivilegeValueW` + `AdjustTokenPrivileges`. Ignore failure. This recovers REALTIME where the privilege is present but disabled (the Vibepollo#563 case).
-2. If REALTIME still fails, try HIGH (`D3DKMT_SchedulingPriorityClass::HIGH`), then give up with a warning.
-3. In `initialize_all()`, change `success &= initialize_gpu_scheduling_priority();` to a plain call, as DPI awareness already is. The log keeps "GPU scheduling priority set: YES/NO" from `_gpu_priority_set`.
+1. The helper asks only for the HIGH GPU scheduling class (`D3DKMT_SchedulingPriorityClass::HIGH`). It no longer asks for REALTIME and does not change any token privilege. The helper only copies frames, and REALTIME is unsafe on NVIDIA GPUs with HAGS enabled; the main process guards against that (`nv_realtime_hags`), but the helper cannot see that decision without an IPC change.
+2. Success is logged at info level as "GPU scheduling priority set to HIGH". If HIGH is refused, the helper logs a warning and keeps running at the default GPU priority.
+3. In `initialize_all()`, the GPU priority step is no longer fatal, like DPI awareness. The log keeps "GPU scheduling priority set: YES/NO" from `_gpu_priority_set`.
 
 Tests:
 
-- Windows only, so there is no Linux unit test.
-- Add a pure helper `wgc_helper_init_policy::required_steps()` in a small header (for example `src/platform/windows/wgc_capture_policy.h`, which already exists and is included by Linux tests). It returns which init steps are fatal. Test in `tests/unit/test_window_capture_policy.cpp` that GPU priority and DPI awareness are not fatal, and that thread priority, MMCSS and the WinRT apartment are. `initialize_all()` uses that table.
+- Windows only, so there is no Linux unit test of the D3DKMT call.
+- The pure helper `platf::dxgi::wgc_policy::helper_init_step_required()` in `src/platform/windows/wgc_capture_policy.h` says which init steps are fatal. `tests/unit/test_window_capture_policy.cpp` checks that GPU priority and DPI awareness are not fatal, and that thread priority, MMCSS and the WinRT apartment are. `initialize_all()` uses that table.
 
-Measure: start the helper as a normal user (the steps in Vibepollo#563). The stream must start, and the helper log shows "GPU scheduling priority set: NO" or "YES". With elevation it should show YES at REALTIME.
+Measure: start the helper as a normal user (the steps in Vibepollo#563). The stream must start, and the helper log shows "GPU scheduling priority set to HIGH" (or the warning when HIGH is refused) and "GPU scheduling priority set: YES" (or "NO").
 
-Risk: none for working setups (same path). Kill switch: not needed.
+Risk: on setups where the 1.2.2 helper got REALTIME, its copies now run at HIGH, so they may wait longer under heavy GPU load. Compare the H4 helper timers ("WGC helper: shared texture keyed mutex wait", "... submit") under GPU load with 1.2.2 behaviour if capture stutters. Kill switch: none; 1.2.2 behaviour would need a code change.
 
 ### H2. Audio QoS class option
 
