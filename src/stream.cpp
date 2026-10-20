@@ -615,6 +615,10 @@ namespace stream {
 
       std::unique_ptr<platf::deinit_t> qos;
 
+      // Encoder bitrate read by the video broadcast thread for pacing. Written at session
+      // start and by the dynamic bitrate endpoint, so it is atomic.
+      std::atomic<int> encoder_bitrate_kbps {0};
+
       // Last pacing rate logged for this session; only the video broadcast thread uses it.
       std::uint64_t logged_pacing_bps = 0;
     } video;
@@ -800,6 +804,7 @@ namespace stream {
       // value the encoder thread will adopt from the event below.
       session->config.monitor.bitrate = bitrate_kbps;
       session->config.monitor.client_requested_bitrate = bitrate_kbps;
+      session->video.encoder_bitrate_kbps.store(bitrate_kbps, std::memory_order_relaxed);
       session->video.bitrate_events->raise(bitrate_kbps);
       ++updated;
     }
@@ -2139,40 +2144,29 @@ namespace stream {
 
       try {
         // Pacing target. An explicit pacing_max_bitrate_kbps always wins, never below 110%
-        // of the stream bitrate: a cap under the encoder's output rate makes the sender
+        // of the encoder bitrate: a cap under the encoder's output rate makes the sender
         // permanently slower than the encoder, so the packet queue (and stream latency)
-        // grows without bound. Without it, pacing_mode = legacy keeps the 1.2.2 rate of
-        // ~80% of 1 Gbps (Ethernet), which on Wi-Fi blasts each frame out faster than the
-        // link can absorb and amplifies AMPDU-aggregation jitter on the client. The
-        // default pacing_mode = auto paces at a multiple of the stream bitrate, clamped to
-        // 300-800 Mbps. Re-evaluated per frame since the ABR endpoint can change the
-        // bitrate mid-session.
-        const auto pacing = stream_pacing::resolve_pacing_bps(
-          config::stream.pacing_max_bitrate_kbps,
-          config::stream.pacing_mode,
-          session->config.monitor.bitrate,
-          config::stream.pacing_auto_multiplier_percent
-        );
+        // grows without bound. Without it, pacing_mode = legacy keeps the 1.2.2 schedule:
+        // ~80% of 1 Gbps (Ethernet) in 64 KB batches, so a frame smaller than one batch
+        // leaves at line rate, which on Wi-Fi amplifies AMPDU-aggregation jitter on the
+        // client. The default pacing_mode = auto paces at a multiple of the encoder bitrate,
+        // clamped to 300-800 Mbps, and sends every frame in paced batches of about 0.5 ms.
+        // Re-evaluated per frame since the ABR endpoint can change the bitrate mid-session.
+        const int encoder_bitrate_kbps = session->video.encoder_bitrate_kbps.load(std::memory_order_relaxed);
+        const auto pacing = stream_pacing::resolve_pacing_bps({
+          .configured_kbps = config::stream.pacing_max_bitrate_kbps,
+          .mode = config::stream.pacing_mode,
+          .encoder_bitrate_kbps = encoder_bitrate_kbps,
+          .fec_percentage = config::stream.fec_percentage,
+          .multiplier_percent = config::stream.pacing_auto_multiplier_percent,
+        });
         if (pacing.configured_below_stream) {
           static std::atomic_flag pacing_clamp_warned;
           if (!pacing_clamp_warned.test_and_set()) {
             BOOST_LOG(warning) << "pacing_max_bitrate_kbps ("sv << config::stream.pacing_max_bitrate_kbps
-                               << " kbps) is below the negotiated stream bitrate ("sv << session->config.monitor.bitrate
+                               << " kbps) is below the negotiated stream bitrate ("sv << encoder_bitrate_kbps
                                << " kbps); clamping the pacer to 110% of the stream bitrate"sv;
           }
-        }
-        if (session->video.logged_pacing_bps != pacing.bps) {
-          session->video.logged_pacing_bps = pacing.bps;
-          BOOST_LOG(info) << "Video pacing: "sv << stream_pacing::to_string(pacing.source) << ", "sv
-                          << pacing.bps / 1'000'000 << " Mbps (stream "sv << session->config.monitor.bitrate / 1000 << " Mbps)"sv;
-        }
-        const size_t pacing_bps = (size_t) pacing.bps;
-        //                                          bps    ms    packet      byte
-        size_t ratecontrol_packets_in_1ms = pacing_bps / 1000 / blocksize / 8;
-        if (ratecontrol_packets_in_1ms == 0) {
-          // Floor at one packet/ms so the inner pacing loop never divides by zero
-          // and we still send something on absurdly low bitrate caps.
-          ratecontrol_packets_in_1ms = 1;
         }
 
         // Send less than 64K in a single batch.
@@ -2182,11 +2176,23 @@ namespace stream {
         size_t max_batch_size_bytes = 64 * 1024;
         max_batch_size_bytes = std::min<size_t>(max_batch_size_bytes, (size_t) config::stream.video_max_batch_size_kb * 1024);
 
-        size_t send_batch_size = std::max<size_t>(1, max_batch_size_bytes / blocksize);
-        // Also don't exceed 64 packets, which can happen when Moonlight requests
-        // unusually small packet size.
-        // Generic Segmentation Offload on Linux can't do more than 64.
-        send_batch_size = std::min<size_t>(64, send_batch_size);
+        // Also don't exceed 64 packets per batch, which can happen when Moonlight requests
+        // unusually small packet size; GSO on Linux can't do more than 64.
+        const auto send_schedule = stream_pacing::plan_send_schedule(
+          pacing.bps,
+          (size_t) blocksize,
+          max_batch_size_bytes,
+          pacing.source == stream_pacing::pacing_source_e::auto_rate
+        );
+        const size_t send_batch_size = send_schedule.batch_size;
+
+        if (session->video.logged_pacing_bps != pacing.bps) {
+          session->video.logged_pacing_bps = pacing.bps;
+          BOOST_LOG(info) << "Video pacing: "sv << stream_pacing::to_string(pacing.source) << ", "sv
+                          << pacing.bps / 1'000'000 << " Mbps (encoder bitrate "sv << encoder_bitrate_kbps / 1000
+                          << " Mbps), batches of up to "sv << send_batch_size << " packets"sv
+                          << (send_schedule.pace_every_batch ? ", each paced"sv : ""sv);
+        }
 
         // Don't ignore the last ratecontrol group of the previous frame
         auto ratecontrol_frame_start = std::max(ratecontrol_next_frame_start, std::chrono::steady_clock::now());
@@ -2291,11 +2297,9 @@ namespace stream {
               // Do pacing within the frame.
               // Also trigger pacing before the first send_batch() of the frame
               // to account for the last send_batch() of the previous frame.
-              if (ratecontrol_group_packets_sent >= ratecontrol_packets_in_1ms ||
-                  ratecontrol_frame_packets_sent == 0) {
-                auto due = ratecontrol_frame_start +
-                           std::chrono::duration_cast<std::chrono::nanoseconds>(1ms) *
-                             ratecontrol_frame_packets_sent / ratecontrol_packets_in_1ms;
+              // In auto mode every batch waits for its due time (see stream_pacing_policy.h).
+              if (stream_pacing::pace_before_batch(send_schedule, ratecontrol_group_packets_sent, ratecontrol_frame_packets_sent)) {
+                auto due = ratecontrol_frame_start + stream_pacing::due_offset(send_schedule, ratecontrol_frame_packets_sent);
 
                 auto now = std::chrono::steady_clock::now();
                 if (now < due) {
@@ -2343,9 +2347,7 @@ namespace stream {
           }
 
           // remember this in case the next frame comes immediately
-          ratecontrol_next_frame_start = ratecontrol_frame_start +
-                                         std::chrono::duration_cast<std::chrono::nanoseconds>(1ms) *
-                                           ratecontrol_frame_packets_sent / ratecontrol_packets_in_1ms;
+          ratecontrol_next_frame_start = ratecontrol_frame_start + stream_pacing::due_offset(send_schedule, ratecontrol_frame_packets_sent);
           ratecontrol_frame_packets_logger.collect_and_log((double) ratecontrol_frame_packets_sent);
 
           frame_network_latency_logger.second_point_now_and_log();
@@ -3378,6 +3380,7 @@ namespace stream {
       session->video.idr_events = mail->event<bool>(mail::idr);
       session->video.invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
       session->video.bitrate_events = mail->event<int>(mail::dynamic_bitrate);
+      session->video.encoder_bitrate_kbps.store(session->config.monitor.bitrate, std::memory_order_relaxed);
       session->video.lowseq = 0;
       session->video.ping_payload = launch_session.av_ping_payload;
       if (config.encryptionFlagsEnabled & SS_ENC_VIDEO) {

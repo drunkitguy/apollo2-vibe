@@ -2207,9 +2207,10 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            How fast each video frame is sent when `pacing_max_bitrate_kbps` is `0`.
-            Sending a frame as one fast burst makes Wi-Fi access points deliver it unevenly; pacing spreads it over
-            a few milliseconds. An explicit `pacing_max_bitrate_kbps` always wins over this option.
+            How the packets of each video frame are spread out when `pacing_max_bitrate_kbps` is `0`.
+            Sending a frame as one fast burst makes Wi-Fi access points deliver it unevenly; pacing spreads it
+            over a few milliseconds at the cost of that much added send time per frame.
+            An explicit `pacing_max_bitrate_kbps` always wins over this option and uses the `legacy` batches.
         </td>
     </tr>
     <tr>
@@ -2227,12 +2228,20 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td rowspan="2">Choices</td>
         <td>auto</td>
-        <td>Pace at `pacing_auto_multiplier_percent` of the stream bitrate (4 times by default), clamped to
-            300-800 Mbps and never below 110% of the stream bitrate. A 100 Mbps stream is sent at 400 Mbps.</td>
+        <td>Pace at `pacing_auto_multiplier_percent` of the encoder bitrate (4 times by default), clamped to
+            300-800 Mbps and never below 110% of the wire rate (encoder bitrate plus FEC). Each frame is sent in
+            batches of about 0.5 ms of packets at that rate (at least 4 packets), and every batch waits for its
+            turn. The encoder bitrate is the client's bitrate minus FEC, audio and overhead: with the default 20%
+            FEC, a 100 Mbps client setting gives about 79 Mbps, paced at about 316 Mbps, so an average 120 FPS
+            frame takes about 2.5 ms to send instead of leaving in one burst. A 500 KB key frame (600 KB with FEC)
+            takes about 16 ms at the 300 Mbps floor instead of about 6 ms, which delays the frames after it and
+            adds latency on wired networks.</td>
     </tr>
     <tr>
         <td>legacy</td>
-        <td>Pace at 800 Mbps (80% of 1 Gbps), the behaviour of window-only host 1.2.2.</td>
+        <td>Pace at 800 Mbps (80% of 1 Gbps) in batches of up to 64 KB, waiting only once per millisecond of
+            packets, the behaviour of window-only host 1.2.2. A frame smaller than one batch is sent as one
+            burst.</td>
     </tr>
 </table>
 
@@ -2242,8 +2251,9 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            The send pacing rate of `pacing_mode = auto`, in percent of the stream bitrate. The result is clamped
-            to 300-800 Mbps. Lower values spread each frame over more time.
+            The send pacing rate of `pacing_mode = auto`, in percent of the encoder bitrate. The result is clamped
+            to 300-800 Mbps and never goes below 110% of the wire rate. Lower values spread each frame over more
+            time. Values outside 150-1000 are clamped, with a warning in the log.
         </td>
     </tr>
     <tr>
@@ -4473,7 +4483,7 @@ Enables NVIDIA temporal adaptive quantization when supported.
 
 ### pacing_max_bitrate_kbps
 
-Sets the video send pacing rate, in Kbps. When set, it always wins over `pacing_mode`, but the pacer never runs below 110% of the stream bitrate. Set `0` to let `pacing_mode` decide.
+Sets the video send pacing rate, in Kbps. When set, it always wins over `pacing_mode` and sends frames in the `legacy` batches, but the pacer never runs below 110% of the encoder bitrate. Set `0` to let `pacing_mode` decide.
 
 ### packetsize
 

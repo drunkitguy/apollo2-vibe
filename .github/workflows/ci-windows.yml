@@ -681,7 +681,9 @@ jobs:
           fi
           "${test_exe}"
 
-      # Stream network policy: audio QoS class and video pacing rate.
+      # Stream network policy: audio QoS class and video pacing, plus the config and
+      # locale catalogs that must list their options. The catalog tests read repository
+      # files relative to the workspace root.
       - name: Test stream network policy
         if: inputs.run_window_only_tests && inputs.build_tests
         shell: msys2 {0}
@@ -689,7 +691,9 @@ jobs:
           set -euo pipefail
           for test_name in \
             test_component_qos_policy \
-            test_component_stream_pacing_policy; do
+            test_component_stream_pacing_policy \
+            test_component_resource_config_catalog \
+            test_component_resource_locale_catalog; do
             test_exe="$(find build -type f -name "${test_name}.exe" -print -quit)"
             if [[ -z "${test_exe}" ]]; then
               echo "::error::${test_name}.exe was not built" >&2

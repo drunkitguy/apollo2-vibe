@@ -284,9 +284,9 @@ namespace config {
     // QoS class of audio packets for clients that ask for QoS. voice is the 1.2.2 behaviour.
     stream_qos::audio_qos_e audio_qos;
 
-    // Send pacing rate when pacing_max_bitrate_kbps is 0. auto paces at
-    // pacing_auto_multiplier_percent of the stream bitrate, clamped to 300-800 Mbps;
-    // legacy is the 1.2.2 rate of ~80% of 1 Gbps.
+    // Send pacing when pacing_max_bitrate_kbps is 0. auto paces every ~0.5 ms batch at
+    // pacing_auto_multiplier_percent of the encoder bitrate, clamped to 300-800 Mbps;
+    // legacy is the 1.2.2 schedule (~80% of 1 Gbps, 64 KB batches).
     stream_pacing::pacing_mode_e pacing_mode;
     int pacing_auto_multiplier_percent;
   };
