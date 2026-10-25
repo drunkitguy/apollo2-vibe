@@ -161,24 +161,24 @@ jobs:
           body: |
             Vibepollo host build with window-only capture. When a client asks for it, the stream shows only the window of the app launched from the client. The Windows desktop, taskbar, notifications and other windows are replaced by black.
 
-            ## What's new in 1.3
+            ## 1.3.2: restores 1.2.2 streaming behaviour by default after stutter reports; new options are opt-in
 
-            These changes target streaming over Wi-Fi. They add three options to `sunshine.conf` in the `config` folder of the install directory; restart the host after changing one. They are also on the Network page of the web UI.
+            Streams stuttered with host 1.3.1 on both Ethernet and Wi-Fi. 1.3.2 sends video and tags audio exactly as 1.2.2 did unless you turn the new options on, and the capture helper again asks Windows for the realtime GPU priority first, as in 1.2.2.
 
-            | New default | Back to the 1.2.2 behaviour |
+            The options are lines in `sunshine.conf` in the `config` folder of the install directory; restart the host after changing one. They are also on the Network page of the web UI.
+
+            | Default (1.2.2 behaviour) | Opt-in |
             |---|---|
-            | `pacing_mode = auto` | `pacing_mode = legacy` |
-            | `pacing_auto_multiplier_percent = 400` | not used with `pacing_mode = legacy` |
-            | `audio_qos = video` | `audio_qos = voice` |
+            | `pacing_mode = legacy` | `pacing_mode = auto` (experimental) |
+            | `pacing_auto_multiplier_percent = 400` | only used with `pacing_mode = auto` |
+            | `audio_qos = voice` | `audio_qos = video` or `audio_qos = off` |
 
-            - Video pacing (`pacing_mode = auto`): each video frame is sent in small batches of about 0.5 ms of packets, and every batch waits for its turn, at 4 times the encoder bitrate (`pacing_auto_multiplier_percent = 400`), kept between 300 and 800 Mbps and never below 110% of the rate the stream puts on the wire. In 1.2.2 most frames left in one burst at line rate, which Wi-Fi access points deliver unevenly. A `pacing_max_bitrate_kbps` value you set yourself still wins and uses the 1.2.2 batches. The encoder bitrate is the client's bitrate minus FEC, audio and overhead: a 100 Mbps client setting gives about 79 Mbps, paced at about 316 Mbps.
-            - The cost is send time: an average 120 FPS frame of that stream takes about 2.5 ms to send, and a large key frame (600 KB with FEC) about 16 ms instead of about 6 ms, which delays the frames after it. On a wired network `pacing_mode = legacy` can give slightly lower latency.
-            - Audio QoS (`audio_qos = video`): for clients that ask for QoS tagging, audio packets are now tagged like video (DSCP 40) instead of as voice (DSCP 56). Some Wi-Fi access points drop or delay packets in their voice category under load, which can be heard as crackling audio. `audio_qos = off` sets no tag on audio.
-            - The capture helper now asks Windows for the high GPU priority instead of the realtime one, and keeps running when even that is refused. In 1.2.2 it exited when the realtime priority was refused, for example for a user without the privilege to raise priorities. The host itself keeps choosing between realtime and high GPU priority as before.
-            - At the debug log level, the host and the capture helper log every 20 seconds how long the window capture copy path waits for the shared texture and how long its copies take to submit.
-            - 1.3.1: the `auto` batches are new; in 1.3.0 `auto` only lowered the rate, which left most frames unchanged. 1.3.0 also still tried the realtime GPU priority in the helper first. The logs and settings texts are corrected.
+            - `pacing_mode = auto` (experimental): each video frame is sent in small batches of about 0.5 ms of packets, and every batch waits for its turn, at 4 times the encoder bitrate (`pacing_auto_multiplier_percent`), kept between 300 and 800 Mbps and never below 110% of the rate the stream puts on the wire. It spreads frames out for Wi-Fi access points but adds send time: about 2.5 ms for an average 120 FPS frame of a 100 Mbps stream, and about 16 ms instead of about 6 ms for a large key frame. It was the default in 1.3.1. A `pacing_max_bitrate_kbps` value you set yourself always wins and uses the 1.2.2 batches.
+            - `audio_qos = video`: for clients that ask for QoS tagging, audio packets are tagged like video (DSCP 40) instead of as voice (DSCP 56), for access points that drop or delay their voice category under load. `audio_qos = off` sets no tag on audio.
+            - The capture helper no longer exits when Windows refuses the realtime GPU priority, for example for a user without the privilege to raise priorities: it falls back to the high priority, then to the default one. Where the realtime priority is granted, nothing changes from 1.2.2.
+            - At the debug log level, the host and the capture helper log every 20 seconds how long the window capture copy path waits for the shared texture and how long its copies take to submit. Nothing changes at other log levels.
 
-            How much the pacing and audio changes help depends on the network. If a stream gets worse after the update, compare with `pacing_mode = legacy` and `audio_qos = voice` on that network.
+            If you try the opt-in options, compare them with the defaults on your own network; their benefit is not measured yet.
 
             ## What's new in 1.2
 
