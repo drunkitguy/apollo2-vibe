@@ -17,7 +17,7 @@ namespace stream_qos {
     off,  ///< No DSCP tag on audio packets.
   };
 
-  inline constexpr audio_qos_e default_audio_qos = audio_qos_e::video;
+  inline constexpr audio_qos_e default_audio_qos = audio_qos_e::voice;  ///< The 1.2.2 behaviour.
 
   /**
    * @brief Parses an `audio_qos` value.

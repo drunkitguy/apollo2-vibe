@@ -114,7 +114,7 @@ TEST(StreamPacingPolicy, ParsesModes) {
   EXPECT_EQ(pacing_mode_from_view("legacy"), pacing_mode_e::legacy);
   EXPECT_FALSE(pacing_mode_from_view("").has_value());
   EXPECT_FALSE(pacing_mode_from_view("Auto").has_value());
-  EXPECT_EQ(stream_pacing::default_pacing_mode, pacing_mode_e::auto_rate);
+  EXPECT_EQ(stream_pacing::default_pacing_mode, pacing_mode_e::legacy);
   EXPECT_EQ(stream_pacing::to_string(pacing_mode_e::auto_rate), "auto");
   EXPECT_EQ(stream_pacing::to_string(pacing_mode_e::legacy), "legacy");
 }
@@ -276,4 +276,24 @@ TEST(StreamPacingSchedule, AutoBatchesRespectTheByteAndGsoLimits) {
   EXPECT_EQ(stream_pacing::plan_send_schedule(10'000 * mbps, 300, max_batch_bytes, true).batch_size, 64u);
   // Very low rates still send at least 4 packets per batch.
   EXPECT_EQ(stream_pacing::plan_send_schedule(1 * mbps, blocksize, max_batch_bytes, true), (send_schedule_t {1, 4, true}));
+}
+
+TEST(StreamPacingSchedule, DefaultsReproduceThe122RateAndSchedule) {
+  // A default-constructed input is the default config: legacy pacing, no explicit cap.
+  for (int encoder_kbps = 0; encoder_kbps <= 300'000; encoder_kbps += 5'000) {
+    pacing_input_t input;
+    input.encoder_bitrate_kbps = encoder_kbps;
+    input.fec_percentage = 20;
+    const auto decision = resolve_pacing_bps(input);
+    EXPECT_EQ(decision.bps, pacing_bps_122(0, encoder_kbps));
+    EXPECT_EQ(decision.source, pacing_source_e::legacy);
+    const auto schedule = stream_pacing::plan_send_schedule(decision.bps, blocksize, max_batch_bytes, decision.source == pacing_source_e::auto_rate);
+    for (const int fps : {60, 120}) {
+      const auto frame = average_frame_shards(encoder_kbps == 0 ? 1 : encoder_kbps, fps);
+      std::chrono::nanoseconds end_122 {};
+      std::chrono::nanoseconds end_now {};
+      EXPECT_EQ(schedule_of(schedule, frame, end_now), schedule_122(decision.bps, blocksize, max_batch_bytes, frame, end_122));
+      EXPECT_EQ(end_now, end_122);
+    }
+  }
 }

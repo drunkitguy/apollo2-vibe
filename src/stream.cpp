@@ -2149,8 +2149,8 @@ namespace stream {
         // grows without bound. Without it, pacing_mode = legacy keeps the 1.2.2 schedule:
         // ~80% of 1 Gbps (Ethernet) in 64 KB batches, so a frame smaller than one batch
         // leaves at line rate, which on Wi-Fi amplifies AMPDU-aggregation jitter on the
-        // client. The default pacing_mode = auto paces at a multiple of the encoder bitrate,
-        // clamped to 300-800 Mbps, and sends every frame in paced batches of about 0.5 ms.
+        // client. The experimental, opt-in pacing_mode = auto paces at a multiple of the encoder
+        // bitrate, clamped to 300-800 Mbps, and sends every frame in paced batches of about 0.5 ms.
         // Re-evaluated per frame since the ABR endpoint can change the bitrate mid-session.
         const int encoder_bitrate_kbps = session->video.encoder_bitrate_kbps.load(std::memory_order_relaxed);
         const auto pacing = stream_pacing::resolve_pacing_bps({
@@ -2742,7 +2742,7 @@ namespace stream {
     }
 
     // Enable local prioritization and QoS tagging on audio traffic if requested by the client.
-    // audio_qos picks the class: voice is the 1.2.2 behaviour, video tags audio like video.
+    // audio_qos picks the class: voice (default) is the 1.2.2 behaviour, video tags audio like video.
     auto address = session->audio.peer.address();
     const bool audio_qos_requested = session->config.audioQosType != 0;
     const auto audio_qos = config::stream.audio_qos;

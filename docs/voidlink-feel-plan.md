@@ -478,6 +478,7 @@ Out of scope. The capture and helper threads already use MMCSS and `THREAD_PRIOR
 
 Where the implementation differs from or refines the items above:
 
+- 1.3.2 (after stutter reports with host 1.3.1 and client 1.3.3, on Ethernet and Wi-Fi): the defaults are the 1.2.2 behaviour again. `pacing_mode` defaults to `legacy` and `auto` is experimental and opt-in; `audio_qos` defaults to `voice` and `video` is opt-in. The H2 and H3 defaults written above (`video`, `auto`) apply to 1.3.0 and 1.3.1 only.
 - H1: the fatal-step table is `platf::dxgi::wgc_policy::helper_init_step_required()` in `src/platform/windows/wgc_capture_policy.h`, tested in `tests/unit/test_window_capture_policy.cpp`. Since 1.3.2 the helper tries REALTIME exactly as 1.2.2 did, then HIGH, and starts either way (see H1 above for 1.3.0 and 1.3.1).
 - H2: the policy lives in namespace `stream_qos` (`src/qos_policy.h`). The plan's `qos_plan_t` returns its own `traffic_type_e` so the test does not need `platform/common.h`; `stream.cpp` maps it to `platf::qos_data_type_e`. Without a client request, and with `audio_qos=off`, the socket is set up exactly like a 1.2.2 session whose client asked for no QoS (type audio, no DSCP tag).
 - H2 also documents the existing `text_field_detection` and `text_field_numeric_hints` options, which were missing from `docs/configuration.md` and `en.json` and kept the config catalog contract test from passing.

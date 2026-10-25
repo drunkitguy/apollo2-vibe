@@ -2168,32 +2168,33 @@ editing the `conf` file in a text editor. Use the examples as reference.
             local network; the client still decides whether any tagging applies.
             Many Wi-Fi access points map DSCP 48 and 56 to the WMM voice access category (AC_VO) and DSCP 40 to the
             video access category (AC_VI). Some access points drop or delay packets in the voice category under
-            load, which can be heard as crackling audio, so audio is tagged like video by default. Audio then
-            shares the video category with the video stream; it is a small share of that traffic.
+            load, which can be heard as crackling audio; `video` avoids that category. Audio then shares the
+            video category with the video stream; it is a small share of that traffic. The default `voice` is
+            the behaviour of window-only host 1.2.2; `video` is opt-in.
         </td>
     </tr>
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            video
+            voice
             @endcode</td>
     </tr>
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            audio_qos = voice
+            audio_qos = video
             @endcode</td>
     </tr>
     <tr>
         <td rowspan="3">Choices</td>
-        <td>video</td>
-        <td>Tag audio like video: qWAVE AudioVideo on Windows (DSCP 40, CS5), DSCP 40 on Linux. On Linux the
-            socket priority of audio also drops from 6 to 5, the value used for video.</td>
-    </tr>
-    <tr>
         <td>voice</td>
         <td>Tag audio as voice, the behaviour of window-only host 1.2.2: qWAVE Voice on Windows (DSCP 56, CS7),
             DSCP 48 (CS6) and socket priority 6 on Linux.</td>
+    </tr>
+    <tr>
+        <td>video</td>
+        <td>Tag audio like video: qWAVE AudioVideo on Windows (DSCP 40, CS5), DSCP 40 on Linux. On Linux the
+            socket priority of audio also drops from 6 to 5, the value used for video.</td>
     </tr>
     <tr>
         <td>off</td>
@@ -2211,37 +2212,38 @@ editing the `conf` file in a text editor. Use the examples as reference.
             Sending a frame as one fast burst makes Wi-Fi access points deliver it unevenly; pacing spreads it
             over a few milliseconds at the cost of that much added send time per frame.
             An explicit `pacing_max_bitrate_kbps` always wins over this option and uses the `legacy` batches.
+            The default `legacy` is the behaviour of window-only host 1.2.2; `auto` is experimental and opt-in.
         </td>
     </tr>
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            auto
+            legacy
             @endcode</td>
     </tr>
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            pacing_mode = legacy
+            pacing_mode = auto
             @endcode</td>
     </tr>
     <tr>
         <td rowspan="2">Choices</td>
+        <td>legacy</td>
+        <td>Pace at 800 Mbps (80% of 1 Gbps) in batches of up to 64 KB, waiting only once per millisecond of
+            packets, the behaviour of window-only host 1.2.2. A frame smaller than one batch is sent as one
+            burst.</td>
+    </tr>
+    <tr>
         <td>auto</td>
-        <td>Pace at `pacing_auto_multiplier_percent` of the encoder bitrate (4 times by default), clamped to
+        <td>Experimental. Pace at `pacing_auto_multiplier_percent` of the encoder bitrate (4 times by default), clamped to
             300-800 Mbps and never below 110% of the wire rate (encoder bitrate plus FEC). Each frame is sent in
             batches of about 0.5 ms of packets at that rate (at least 4 packets), and every batch waits for its
             turn. The encoder bitrate is the client's bitrate minus FEC, audio and overhead: with the default 20%
             FEC, a 100 Mbps client setting gives about 79 Mbps, paced at about 316 Mbps, so an average 120 FPS
             frame takes about 2.5 ms to send instead of leaving in one burst. A 500 KB key frame (600 KB with FEC)
             takes about 16 ms at the 300 Mbps floor instead of about 6 ms, which delays the frames after it and
-            adds latency on wired networks.</td>
-    </tr>
-    <tr>
-        <td>legacy</td>
-        <td>Pace at 800 Mbps (80% of 1 Gbps) in batches of up to 64 KB, waiting only once per millisecond of
-            packets, the behaviour of window-only host 1.2.2. A frame smaller than one batch is sent as one
-            burst.</td>
+            adds latency on wired networks. Streams stuttered with this mode as the default in host 1.3.1.</td>
     </tr>
 </table>
 
@@ -2251,7 +2253,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            The send pacing rate of `pacing_mode = auto`, in percent of the encoder bitrate. The result is clamped
+            The send pacing rate of the experimental `pacing_mode = auto`, in percent of the encoder bitrate. The result is clamped
             to 300-800 Mbps and never goes below 110% of the wire rate. Lower values spread each frame over more
             time. Values outside 150-1000 are clamped, with a warning in the log.
         </td>

@@ -19,11 +19,14 @@ TEST(AudioQosPolicy, ParsesTheThreeValues) {
   EXPECT_EQ(audio_qos_from_view("off"), audio_qos_e::off);
 }
 
-TEST(AudioQosPolicy, UnknownValuesAreRejectedAndTheDefaultIsVideo) {
+TEST(AudioQosPolicy, UnknownValuesAreRejectedAndTheDefaultIsThe122Voice) {
   EXPECT_FALSE(audio_qos_from_view("").has_value());
   EXPECT_FALSE(audio_qos_from_view("Voice").has_value());
   EXPECT_FALSE(audio_qos_from_view("audio").has_value());
-  EXPECT_EQ(stream_qos::default_audio_qos, audio_qos_e::video);
+  EXPECT_EQ(stream_qos::default_audio_qos, audio_qos_e::voice);
+  // The default makes the 1.2.2 socket call whether or not the client asks for QoS.
+  EXPECT_EQ(plan_audio_qos(stream_qos::default_audio_qos, true), (audio_qos_plan_t {true, traffic_type_e::audio}));
+  EXPECT_EQ(plan_audio_qos(stream_qos::default_audio_qos, false), (audio_qos_plan_t {false, traffic_type_e::audio}));
 }
 
 TEST(AudioQosPolicy, NamesRoundTrip) {

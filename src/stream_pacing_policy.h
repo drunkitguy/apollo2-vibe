@@ -17,11 +17,11 @@ namespace stream_pacing {
    * @brief Value of the `pacing_mode` config option.
    */
   enum class pacing_mode_e {
-    auto_rate,  ///< `auto`: a multiple of the encoder bitrate, sent in small paced batches.
-    legacy,  ///< `legacy`: 80% of 1 Gbps with 64 KB batches, as in host 1.2.2.
+    auto_rate,  ///< `auto` (experimental, opt-in): a multiple of the encoder bitrate, sent in small paced batches.
+    legacy,  ///< `legacy` (default): 80% of 1 Gbps with 64 KB batches, as in host 1.2.2.
   };
 
-  inline constexpr pacing_mode_e default_pacing_mode = pacing_mode_e::auto_rate;
+  inline constexpr pacing_mode_e default_pacing_mode = pacing_mode_e::legacy;  ///< The 1.2.2 behaviour; auto is opt-in.
 
   inline constexpr int default_auto_multiplier_percent = 400;
   inline constexpr int min_auto_multiplier_percent = 150;

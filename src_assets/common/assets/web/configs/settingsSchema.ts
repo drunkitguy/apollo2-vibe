@@ -723,13 +723,13 @@ export const settingsCategories: SettingsCategory[] = [
         id: 'network_traffic',
         fields: [
           select('audio_qos', [
-            option('video', 'config.audio_qos_video'),
             option('voice', 'config.audio_qos_voice'),
+            option('video', 'config.audio_qos_video'),
             option('off', 'config.audio_qos_off'),
           ]),
           select('pacing_mode', [
-            option('auto', 'config.pacing_mode_auto'),
             option('legacy', 'config.pacing_mode_legacy'),
+            option('auto', 'config.pacing_mode_auto'),
           ]),
           number('pacing_auto_multiplier_percent', {
             min: 150,
@@ -893,8 +893,8 @@ export const settingsDefaults: Record<string, unknown> = {
   lan_encryption_mode: 0,
   wan_encryption_mode: 1,
   csrf_allowed_origins: '',
-  audio_qos: 'video',
-  pacing_mode: 'auto',
+  audio_qos: 'voice',
+  pacing_mode: 'legacy',
   pacing_auto_multiplier_percent: 400,
   system_tray: true,
   notify_pre_releases: false,
