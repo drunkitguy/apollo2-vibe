@@ -309,27 +309,29 @@ Each commit must pass `./gradlew testDebugUnitTest` (or the configuration CI alr
 
 ## HOST: this repository, version 1.2.2 to 1.3.0
 
-### H1. WGC helper: GPU priority is best effort (HIGH only)
+### H1. WGC helper: GPU priority is best effort
 
 Where: `tools/sunshine_wgc_capture.cpp`:
 
 - `SystemInitializer::initialize_gpu_scheduling_priority()` (384 to 408);
 - `initialize_all()` (437 to 445).
 
-Behaviour (as implemented in 1.3.1, manager decision after review):
+Behaviour (as implemented in 1.3.2, after stutter reports with 1.3.1):
 
-1. The helper asks only for the HIGH GPU scheduling class (`D3DKMT_SchedulingPriorityClass::HIGH`). It no longer asks for REALTIME and does not change any token privilege. The helper only copies frames, and REALTIME is unsafe on NVIDIA GPUs with HAGS enabled; the main process guards against that (`nv_realtime_hags`), but the helper cannot see that decision without an IPC change.
-2. Success is logged at info level as "GPU scheduling priority set to HIGH". If HIGH is refused, the helper logs a warning and keeps running at the default GPU priority.
+1. The helper first asks for REALTIME exactly as 1.2.2 did, with no token privilege change. A setup where 1.2.2 got REALTIME (where streams worked, since failure was fatal then) keeps it, so a heavy game cannot starve the capture copies.
+2. If REALTIME is refused, it asks for HIGH (`D3DKMT_SchedulingPriorityClass::HIGH`). If HIGH is refused too, it logs a warning and keeps running at the default GPU priority.
 3. In `initialize_all()`, the GPU priority step is no longer fatal, like DPI awareness. The log keeps "GPU scheduling priority set: YES/NO" from `_gpu_priority_set`.
+
+History: 1.3.0 also enabled `SeIncreaseBasePriorityPrivilege` before the REALTIME call; 1.3.1 asked only for HIGH, which is one suspect for the stutter reported with 1.3.1. 1.3.2 restores the 1.2.2 call and only adds the HIGH fallback.
 
 Tests:
 
 - Windows only, so there is no Linux unit test of the D3DKMT call.
 - The pure helper `platf::dxgi::wgc_policy::helper_init_step_required()` in `src/platform/windows/wgc_capture_policy.h` says which init steps are fatal. `tests/unit/test_window_capture_policy.cpp` checks that GPU priority and DPI awareness are not fatal, and that thread priority, MMCSS and the WinRT apartment are. `initialize_all()` uses that table.
 
-Measure: start the helper as a normal user (the steps in Vibepollo#563). The stream must start, and the helper log shows "GPU scheduling priority set to HIGH" (or the warning when HIGH is refused) and "GPU scheduling priority set: YES" (or "NO").
+Measure: the helper log shows "GPU scheduling priority set to REALTIME for optimal capture performance" where 1.2.2 worked. Started as a normal user (the steps in Vibepollo#563), the stream must start and the log shows the REALTIME warning followed by "GPU scheduling priority set to HIGH" (or a second warning).
 
-Risk: on setups where the 1.2.2 helper got REALTIME, its copies now run at HIGH, so they may wait longer under heavy GPU load. Compare the H4 helper timers ("WGC helper: shared texture keyed mutex wait", "... submit") under GPU load with 1.2.2 behaviour if capture stutters. Kill switch: none; 1.2.2 behaviour would need a code change.
+Risk: none where REALTIME succeeds (the 1.2.2 path). Where it is refused, the helper now runs at HIGH instead of exiting. Compare the H4 helper timers under GPU load if capture stutters there.
 
 ### H2. Audio QoS class option
 
@@ -476,7 +478,7 @@ Out of scope. The capture and helper threads already use MMCSS and `THREAD_PRIOR
 
 Where the implementation differs from or refines the items above:
 
-- H1: the fatal-step table is `platf::dxgi::wgc_policy::helper_init_step_required()` in `src/platform/windows/wgc_capture_policy.h`, tested in `tests/unit/test_window_capture_policy.cpp`. Since 1.3.1 the helper asks only for the HIGH GPU scheduling class and does not enable any privilege (manager decision after review). It only copies frames, and REALTIME is unsafe on NVIDIA GPUs with HAGS enabled, which the main process guards against (`nv_realtime_hags`) but the helper cannot see without an IPC change. It logs "GPU scheduling priority set to HIGH" at info level, or a warning when HIGH is refused, and starts either way. 1.3.0 tried REALTIME first.
+- H1: the fatal-step table is `platf::dxgi::wgc_policy::helper_init_step_required()` in `src/platform/windows/wgc_capture_policy.h`, tested in `tests/unit/test_window_capture_policy.cpp`. Since 1.3.2 the helper tries REALTIME exactly as 1.2.2 did, then HIGH, and starts either way (see H1 above for 1.3.0 and 1.3.1).
 - H2: the policy lives in namespace `stream_qos` (`src/qos_policy.h`). The plan's `qos_plan_t` returns its own `traffic_type_e` so the test does not need `platform/common.h`; `stream.cpp` maps it to `platf::qos_data_type_e`. Without a client request, and with `audio_qos=off`, the socket is set up exactly like a 1.2.2 session whose client asked for no QoS (type audio, no DSCP tag).
 - H2 also documents the existing `text_field_detection` and `text_field_numeric_hints` options, which were missing from `docs/configuration.md` and `en.json` and kept the config catalog contract test from passing.
 - H2 and H3: `audio_qos`, `pacing_mode` and `pacing_auto_multiplier_percent` are in a new "Stream traffic" group on the Network page of the web UI.

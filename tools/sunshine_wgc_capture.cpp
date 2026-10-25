@@ -413,31 +413,40 @@ public:
   }
 
   /**
-   * @brief Sets the HIGH GPU scheduling class for capture performance under high GPU load.
+   * @brief Sets GPU scheduling priority for optimal capture performance under high GPU load.
    *
-   * The helper only copies frames, so HIGH is enough. REALTIME is left to the main process,
-   * which uses it only where it is safe: on NVIDIA GPUs with HAGS enabled, REALTIME can
-   * freeze the encoder or crash the driver, and the main process falls back to HIGH there
-   * (nv_realtime_hags). The helper cannot see that decision without an IPC change, so it
-   * never asks for REALTIME, which also needs SeIncreaseBasePriorityPrivilege. This step is
-   * best effort: the helper keeps running at the default GPU priority when HIGH is refused.
+   * Tries the REALTIME class first, exactly as host 1.2.2 did (no privilege is enabled), so a
+   * setup where 1.2.2 got REALTIME keeps it and a heavy game cannot starve the capture copies.
+   * When REALTIME is refused (1.2.2 exited here), falls back to HIGH, and when HIGH is refused
+   * too, keeps running at the default GPU priority. This step is not fatal.
    *
    * @return true if GPU priority was successfully set, false otherwise.
    */
   bool initialize_gpu_scheduling_priority() {
     HMODULE gdi32 = GetModuleHandleA("gdi32.dll");
     if (!gdi32) {
-      BOOST_LOG(warning) << "Failed to get gdi32.dll handle for GPU priority adjustment; capture continues at the default GPU priority";
+      BOOST_LOG(warning) << "Failed to get gdi32.dll handle for GPU priority adjustment";
       return false;
     }
 
     auto d3dkmt_set_process_priority = reinterpret_cast<PD3DKMTSetProcessSchedulingPriorityClass>(GetProcAddress(gdi32, "D3DKMTSetProcessSchedulingPriorityClass"));
     if (!d3dkmt_set_process_priority) {
-      BOOST_LOG(warning) << "D3DKMTSetProcessSchedulingPriorityClass not available; capture continues at the default GPU priority";
+      BOOST_LOG(warning) << "D3DKMTSetProcessSchedulingPriorityClass not available, GPU priority not set";
       return false;
     }
 
-    const HRESULT hr = d3dkmt_set_process_priority(GetCurrentProcess(), static_cast<LONG>(D3DKMT_SchedulingPriorityClass::HIGH));
+    auto priority = static_cast<LONG>(D3DKMT_SchedulingPriorityClass::REALTIME);
+
+    HRESULT hr = d3dkmt_set_process_priority(GetCurrentProcess(), priority);
+    if (SUCCEEDED(hr)) {
+      BOOST_LOG(info) << "GPU scheduling priority set to REALTIME for optimal capture performance";
+      _gpu_priority_set = true;
+      return true;
+    }
+    BOOST_LOG(warning) << "Failed to set GPU scheduling priority to REALTIME: " << hr
+                       << " (may require administrator privileges for optimal performance); trying HIGH";
+
+    hr = d3dkmt_set_process_priority(GetCurrentProcess(), static_cast<LONG>(D3DKMT_SchedulingPriorityClass::HIGH));
     if (FAILED(hr)) {
       BOOST_LOG(warning) << "Failed to set GPU scheduling priority to HIGH: " << hr
                          << "; capture continues at the default GPU priority";
